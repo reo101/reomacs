@@ -1,0 +1,627 @@
+#+TITLE: Reomacs
+#+PROPERTY: header-args:emacs-lisp :tangle config.el :lexical t :noweb yes :results silent
+
+* Prep
+
+** Lexical bindings, duh...
+
+#+begin_src emacs-lisp
+  ;;; -*- lexical-binding: t -*-
+#+end_src
+
+** Macros
+
+#+begin_src emacs-lisp
+  (defmacro comment (&rest _body)
+    "Ignores all arguments and returns nil.
+Use to comment out blocks of code without disabling them with semicolons."
+    nil)
+#+end_src
+
+** Auto-Tangle
+
+#+begin_src emacs-lisp
+  (defun reomacs/tangle-config-org ()
+    "Tangle config.org automatically if in `user-emacs-directory`"
+    (when (string-equal (buffer-file-name)
+                        (expand-file-name "config.org" user-emacs-directory))
+      (let ((org-confirm-babel-evaluate nil))
+        (org-babel-tangle))))
+
+  (add-hook 'after-save-hook #'reomacs/tangle-config-org)
+  (comment
+    (reomacs/tangle-config-org))
+#+end_src
+
+** Defaults
+
+#+begin_src emacs-lisp
+  (defun reomacs/setup-frame-ui (frame)
+    (with-selected-frame frame
+      (when (display-graphic-p frame)
+        (tool-bar-mode -1)
+        (menu-bar-mode -1)
+        (scroll-bar-mode -1))))
+
+  ;; Run immediately for the first frame
+  (reomacs/setup-frame-ui (selected-frame))
+
+  ;; Run for any new frames created (e.g. from emacsclient -c)
+  (add-hook 'after-make-frame-functions #'reomacs/setup-frame-ui)
+
+  (setopt scroll-step 1)
+  (setopt scroll-margin 1)
+
+  (setopt x-select-enable-clipboard t)
+  (fset 'yes-or-no-p 'y-or-n-p)
+  (pixel-scroll-precision-mode)
+  ;; (pixel-scroll-precision-use-momentum)
+
+  ;; Fonts
+  (when (member "FiraCode Nerd Font" (font-family-list))
+    (set-face-attribute 'default nil :font "FiraCode Nerd Font" :height 108)
+    (set-face-attribute 'fixed-pitch nil :font "FiraCode Nerd Font"))
+
+  ;; Indentation
+  ;; Always use spaces instead of tabs
+  (setq-default indent-tabs-mode nil)
+
+  ;; Specifically make sure org-mode and emacs-lisp-mode use spaces
+  (add-hook 'org-mode-hook (lambda () (setq indent-tabs-mode nil)))
+  (add-hook 'emacs-lisp-mode-hook (lambda () (setq indent-tabs-mode nil)))
+
+  ;; Optional: make tab always insert 2 spaces (or your preferred width)
+  (setq-default tab-width 2)
+#+end_src
+
+** Package Manager (straight)
+
+#+begin_src emacs-lisp
+  (defvar bootstrap-version)
+  (let ((bootstrap-file
+         (expand-file-name
+          "straight/repos/straight.el/bootstrap.el"
+          (or (bound-and-true-p straight-base-dir)
+              user-emacs-directory)))
+        (bootstrap-version 7))
+    (unless (file-exists-p bootstrap-file)
+      (with-current-buffer
+          (url-retrieve-synchronously
+           "https://raw.githubusercontent.com/radian-software/straight.el/develop/install.el"
+           'silent 'inhibit-cookies)
+        (goto-char (point-max))
+        (eval-print-last-sexp)))
+    (load bootstrap-file nil 'nomessage))
+  (setopt straight-use-package-by-default t)
+#+end_src
+
+* UI
+
+** Scratch
+
+#+begin_src emacs-lisp
+  (with-current-buffer (get-buffer-create "*scratch*")
+    (let* ((banner "
+            ;;
+            ;; ██████╗  ███████╗ ██████╗ ███╗   ███╗ █████╗  ██████╗███████╗
+            ;; ██╔══██╗ ██╔════╝██╔═══██╗████╗ ████║██╔══██╗██╔════╝██╔════╝
+            ;; ██████╔╝ █████╗  ██║   ██║██╔████╔██║███████║██║     ███████╗
+            ;; ██╔══██╗ ██╔══╝  ██║   ██║██║╚██╔╝██║██╔══██║██║     ╚════██║
+            ;; ██║   ██║███████╗╚██████╔╝██║ ╚═╝ ██║██║  ██║╚██████╗███████║
+            ;; ╚═╝   ╚═╝╚══════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝╚══════╝
+            ;;
+            ;;   Loading time : %s
+            ;;   Packages     : %s
+            ")
+           (cleaned-banner (string-trim
+                            (replace-regexp-in-string
+                             "^\\s-*;;" ";;"
+                             banner))))
+    (insert (format cleaned-banner
+             (emacs-init-time)
+             (number-to-string (length package-activated-list))))))
+
+  (message (emacs-init-time))
+#+end_src
+
+** Nova
+
+#+begin_src emacs-lisp
+  (use-package nova
+    :straight (:host github :repo "thisisran/nova")
+    :config
+    (nova-vertico-mode 1)
+    (nova-eldoc-mode 1))
+#+end_src
+
+
+** Scrolling
+
+#+begin_src emacs-lisp
+  (use-package ultra-scroll
+    :straight (:host github :repo "jdtsmith/ultra-scroll")
+    :init
+    (setq scroll-conservatively 101 ; important!
+          scroll-margin 0)
+    :config
+    (ultra-scroll-mode 1))
+#+end_src
+
+* Libs
+
+- https://github.com/magnars/dash.el
+
+#+begin_src emacs-lisp
+  (use-package dash
+    :config
+    (global-dash-fontify-mode)
+    (with-eval-after-load 'info-look
+      (dash-register-info-lookup)))
+#+end_src
+
+* Evil
+
+#+begin_src emacs-lisp
+  (use-package evil
+    :straight (:host github :repo "emacs-evil/evil")
+    :init
+    ;; (setopt evil-want-integration t)
+    (setopt evil-want-keybinding nil)
+    (setopt evil-want-C-u-scroll t)
+    (setopt evil-want-C-d-scroll t)
+    (setopt evil-want-C-o-jump t)
+    (setopt evil-want-C-i-jump t)
+    (setopt evil-vsplit-window-right t)
+    (setopt evil-split-window-below t)
+    (setopt evil-undo-system 'undo-redo)
+    ;; (setopt evil-cross-lines t) ;; Shadowed by evil-snipe
+    :config
+    (evil-mode 1)
+    (define-key evil-insert-state-map (kbd "C-g") 'evil-normal-state)
+
+    (evil-set-initial-state 'messages-buffer-mode 'normal)
+    (evil-set-initial-state 'dashboard-mode 'normal))
+
+  (use-package evil-collection
+    :after evil
+    :config
+    ;; (setopt evil-collection-mode-list '(dashboard dired ibuffer))
+    (evil-collection-init))
+
+  (use-package evil-tutor)
+
+  (use-package evil-goggles
+    :config
+    (evil-goggles-mode)
+
+    ;; optionally use diff-mode's faces; as a result, deleted text
+    ;; will be highlighed with `diff-removed` face which is typically
+    ;; some red color (as defined by the color theme)
+    ;; other faces such as `diff-added` will be used for other actions
+    (evil-goggles-use-diff-faces)
+    (setopt evil-goggles-duration 0.100))
+#+end_src
+
+* TreeSitter
+
+#+begin_src emacs-lisp
+  ;; (use-package tree-sitter
+  ;;   :config
+  ;;   (global-tree-sitter-mode))
+  ;; (use-package parinfer-rust-mode
+  ;;   :straight nil
+  ;;   :hook ((clojure-mode emacs-lisp-mode) . parinfer-rust-mode))
+
+  (use-package treesit
+    :straight nil)
+  ;; :config
+  ;; (global-tree-sitter-mode))
+#+end_src
+
+* Lisp
+
+#+begin_src emacs-lisp
+  ;;(use-package parinfer-rust-mode
+  ;;  :init
+  ;;  (setopt parinfer-rust-auto-download nil)
+  ;;  :hook emacs-lisp-mode)
+#+end_src
+
+* Completion
+
+#+begin_src emacs-lisp
+  ;; Enable Vertico.
+  (use-package vertico
+    :custom
+    ;; (vertico-scroll-margin 0) ;; Different scroll margin
+    (vertico-count 20) ;; Show more candidates
+    ;; (vertico-resize t) ;; Grow and shrink the Vertico minibuffer
+    (vertico-cycle t) ;; Enable cycling for `vertico-next/previous'
+    :init
+    (vertico-mode))
+
+  ;; Persist history over Emacs restarts. Vertico sorts by history position.
+  (use-package savehist
+    :init
+    (savehist-mode))
+
+  ;; Emacs minibuffer configurations.
+  (use-package emacs
+    :custom
+    ;; Support opening new minibuffers from inside existing minibuffers.
+    (enable-recursive-minibuffers t)
+    ;; Hide commands in M-x which do not work in the current mode.  Vertico
+    ;; commands are hidden in normal buffers. This setting is useful beyond
+    ;; Vertico.
+    (read-extended-command-predicate #'command-completion-default-include-p)
+    ;; Do not allow the cursor in the minibuffer prompt
+    (minibuffer-prompt-properties
+     '(read-only t cursor-intangible t face minibuffer-prompt)))
+
+  ;; Optionally use the `orderless' completion style.
+  (use-package orderless
+    :custom
+    ;; Configure a custom style dispatcher (see the Consult wiki)
+    ;; (orderless-style-dispatchers '(+orderless-consult-dispatch orderless-affix-dispatch))
+    ;; (orderless-component-separator #'orderless-escapable-split-on-space)
+    (completion-styles '(orderless basic))
+    (completion-category-defaults nil)
+    (completion-category-overrides '((file (styles partial-completion)))))
+
+  ;; Example configuration for Consult
+  (use-package consult
+    ;; Replace bindings. Lazily loaded by `use-package'.
+    :bind (;; C-c bindings in `mode-specific-map'
+           ("C-c M-x" . consult-mode-command)
+           ("C-c h" . consult-history)
+           ("C-c k" . consult-kmacro)
+           ("C-c m" . consult-man)
+           ("C-c i" . consult-info)
+           ([remap Info-search] . consult-info)
+           ;; C-x bindings in `ctl-x-map'
+           ("C-x M-:" . consult-complex-command)     ;; orig. repeat-complex-command
+           ("C-x b" . consult-buffer)                ;; orig. switch-to-buffer
+           ("C-x 4 b" . consult-buffer-other-window) ;; orig. switch-to-buffer-other-window
+           ("C-x 5 b" . consult-buffer-other-frame)  ;; orig. switch-to-buffer-other-frame
+           ("C-x t b" . consult-buffer-other-tab)    ;; orig. switch-to-buffer-other-tab
+           ("C-x r b" . consult-bookmark)            ;; orig. bookmark-jump
+           ("C-x p b" . consult-project-buffer)      ;; orig. project-switch-to-buffer
+           ;; Custom M-# bindings for fast register access
+           ("M-#" . consult-register-load)
+           ("M-'" . consult-register-store)          ;; orig. abbrev-prefix-mark (unrelated)
+           ("C-M-#" . consult-register)
+           ;; Other custom bindings
+           ("M-y" . consult-yank-pop)                ;; orig. yank-pop
+           ;; M-g bindings in `goto-map'
+           ("M-g e" . consult-compile-error)
+           ("M-g f" . consult-flymake)               ;; Alternative: consult-flycheck
+           ("M-g g" . consult-goto-line)             ;; orig. goto-line
+           ("M-g M-g" . consult-goto-line)           ;; orig. goto-line
+           ("M-g o" . consult-outline)               ;; Alternative: consult-org-heading
+           ("M-g m" . consult-mark)
+           ("M-g k" . consult-global-mark)
+           ("M-g i" . consult-imenu)
+           ("M-g I" . consult-imenu-multi)
+           ;; M-s bindings in `search-map'
+           ("M-s d" . consult-find)                  ;; Alternative: consult-fd
+           ("M-s c" . consult-locate)
+           ("M-s g" . consult-grep)
+           ("M-s G" . consult-git-grep)
+           ("M-s r" . consult-ripgrep)
+           ("M-s l" . consult-line)
+           ("M-s L" . consult-line-multi)
+           ("M-s k" . consult-keep-lines)
+           ("M-s u" . consult-focus-lines)
+           ;; Isearch integration
+           ("M-s e" . consult-isearch-history)
+           :map isearch-mode-map
+           ("M-e" . consult-isearch-history)         ;; orig. isearch-edit-string
+           ("M-s e" . consult-isearch-history)       ;; orig. isearch-edit-string
+           ("M-s l" . consult-line)                  ;; needed by consult-line to detect isearch
+           ("M-s L" . consult-line-multi)            ;; needed by consult-line to detect isearch
+           ;; Minibuffer history
+           :map minibuffer-local-map
+           ("M-s" . consult-history)                 ;; orig. next-matching-history-element
+           ("M-r" . consult-history))                ;; orig. previous-matching-history-element
+
+    ;; Enable automatic preview at point in the *Completions* buffer. This is
+    ;; relevant when you use the default completion UI.
+    :hook (completion-list-mode . consult-preview-at-point-mode)
+
+    ;; The :init configuration is always executed (Not lazy)
+    :init
+
+    ;; Tweak the register preview for `consult-register-load',
+    ;; `consult-register-store' and the built-in commands.  This improves the
+    ;; register formatting, adds thin separator lines, register sorting and hides
+    ;; the window mode line.
+    (advice-add #'register-preview :override #'consult-register-window)
+    (setopt register-preview-delay 0.5)
+
+    ;; Use Consult to select xref locations with preview
+    (setopt xref-show-xrefs-function #'consult-xref
+            xref-show-definitions-function #'consult-xref)
+
+    ;; Configure other variables and modes in the :config section,
+    ;; after lazily loading the package.
+    :config
+
+    ;; Optionally configure preview. The default value
+    ;; is 'any, such that any key triggers the preview.
+    ;; (setopt consult-preview-key 'any)
+    ;; (setopt consult-preview-key "M-.")
+    ;; (setopt consult-preview-key '("S-<down>" "S-<up>"))
+    ;; For some commands and buffer sources it is useful to configure the
+    ;; :preview-key on a per-command basis using the `consult-customize' macro.
+    (consult-customize
+     consult-theme :preview-key '(:debounce 0.2 any)
+     consult-ripgrep consult-git-grep consult-grep consult-man
+     consult-bookmark consult-recent-file consult-xref
+     consult--source-bookmark consult--source-file-register
+     consult--source-recent-file consult--source-project-recent-file
+     ;; :preview-key "M-."
+     :preview-key '(:debounce 0.4 any))
+
+    ;; Optionally configure the narrowing key.
+    ;; Both `&lt;` and C-+ work reasonably well.
+    (setopt consult-narrow-key "<") ;; "C-+"
+
+    ;; Optionally make narrowing help available in the minibuffer.
+    ;; You may want to use `embark-prefix-help-command' or which-key instead.
+    ;; (keymap-set consult-narrow-map (concat consult-narrow-key " ?") #'consult-narrow-help)
+
+    (setopt consult-project-function #'consult--default-project--function))
+
+  ;; Enable rich annotations using the Marginalia package
+  (use-package marginalia
+    ;; Bind `marginalia-cycle' locally in the minibuffer.  To make the binding
+    ;; available in the *Completions* buffer, add it to the
+    ;; `completion-list-mode-map'.
+    :bind (:map minibuffer-local-map
+                ("M-A" . marginalia-cycle))
+
+    ;; The :init section is always executed.
+    :init
+
+    ;; Marginalia must be activated in the :init section of use-package such that
+    ;; the mode gets enabled right away. Note that this forces loading the
+    ;; package.
+    (marginalia-mode))
+
+  (use-package embark
+    :straight t
+
+    :bind
+    (("C-." . embark-act)         ;; pick some comfortable binding
+     ("C-;" . embark-dwim)        ;; good alternative: M-.
+     ("C-h B" . embark-bindings)) ;; alternative for `describe-bindings'
+
+    :init
+
+    ;; Optionally replace the key help with a completing-read interface
+    (setopt prefix-help-command #'embark-prefix-help-command)
+
+    ;; Show the Embark target at point via Eldoc. You may adjust the
+    ;; Eldoc strategy, if you want to see the documentation from
+    ;; multiple providers. Beware that using this can be a little
+    ;; jarring since the message shown in the minibuffer can be more
+    ;; than one line, causing the modeline to move up and down:
+
+    ;; (add-hook 'eldoc-documentation-functions #'embark-eldoc-first-target)
+    ;; (setopt eldoc-documentation-strategy #'eldoc-documentation-compose-eagerly)
+
+    :config
+
+    ;; Hide the mode line of the Embark live/completions buffers
+    (add-to-list 'display-buffer-alist
+                 '("\\`\\*Embark Collect \\(Live\\|Completions\\)\\*"
+                   nil
+                   (window-parameters (mode-line-format . none)))))
+
+  ;; Consult users will also want the embark-consult package.
+  (use-package embark-consult
+    :straight t ; only need to install it, embark loads it after consult if found
+    :hook
+    (embark-collect-mode . consult-preview-at-point-mode))
+#+end_src
+
+* Projects
+
+#+begin_src emacs-lisp
+  (use-package project
+    :straight nil
+    :custom
+    (project-switch-commands
+     '((magit-project-status "Magit")
+       (project-find-file "Find file")
+       (project-find-dir "Find directory")
+       (project-eshell "Eshell")
+       (project-vc-dir "VC")))
+    :bind
+    ("C-c p f" . project-find-file)
+    ("C-c p p" . project-switch-project)
+    ("C-c p d" . project-find-dir))
+#+end_src
+
+* Documentts
+** Org
+
+#+begin_src emacs-lisp
+  (use-package org
+    :defer
+    :straight `(org
+                :fork (:host nil
+                       :repo "https://git.tecosaur.net/tec/org-mode.git"
+                       :branch "dev"
+                       :remote "tecosaur")
+                :files (:defaults "etc")
+                :build t
+                :pre-build
+                (with-temp-file "org-version.el"
+                 (require 'lisp-mnt)
+                 (let ((version
+                        (with-temp-buffer
+                          (insert-file-contents "lisp/org.el")
+                          (lm-header "version")))
+                       (git-version
+                        (string-trim
+                         (with-temp-buffer
+                           (call-process "git" nil t nil "rev-parse" "--short" "HEAD")
+                           (buffer-string)))))
+                  (insert
+                   (format "(defun org-release () \"The release version of Org.\" %S)\n" version)
+                   (format "(defun org-git-version () \"The truncate git commit hash of Org mode.\" %S)\n" git-version)
+                   "(provide 'org-version)\n")))
+                :pin nil))
+
+    (use-package org-superstar
+      :config
+      (add-hook 'org-mode-hook (lambda () (org-superstar-mode 1))))
+
+    (dolist (face '((org-level-1 . 1.35)
+                    (org-level-2 . 1.3)
+                    (org-level-3 . 1.2)
+                    (org-level-4 . 1.1)
+                    (org-level-5 . 1.1)
+                    (org-level-6 . 1.1)
+                    (org-level-7 . 1.1)
+                    (org-level-8 . 1.1)))
+      (set-face-attribute (car face) nil
+                          :font "FiraCode Nerd Font"
+                          :weight 'bold
+                          :height (cdr face)))
+    (set-face-attribute 'org-document-title nil
+                        :font "FiraCode Nerd Font"
+                        :weight 'bold
+                        :height 1.8)
+
+    (setq-default prettify-symbols-alist
+                    '(("#+BEGIN_SRC" . "†")
+                      ("#+END_SRC" . "†")
+                      ("#+begin_src" . "†")
+                      ("#+end_src" . "†")
+                      (">=" . "≥")
+                      ("=>" . "⇨")))
+
+    (setq prettify-symbols-unprettify-at-point 'right-edge)
+    (add-hook 'org-mode-hook 'prettify-symbols-mode)
+
+    (add-to-list 'org-structure-template-alist
+                 '("el" . "src emacs-lisp"))
+#+end_src
+
+** Tex
+
+#+begin_src emacs-lisp
+  ;; (use-package tex
+  ;;   :straight auctex)
+  (use-package tex
+    :straight auctex
+    :defer t)
+#+end_src
+
+* Dired
+
+- From https://www.rahuljuliato.com/posts/dired-enhanced
+
+#+begin_src emacs-lisp
+  ;;; EMACS-SOLO-DIRED-ICONS
+  ;;
+  ;; (use-package emacs-solo-dired-icons
+  ;;   :straight nil
+  ;;   :no-require t
+  ;;   :defer t
+  ;;   :init
+  ;;   (defvar emacs-solo/dired-icons-file-icons
+  ;;     '(("el" . "📜")      ("rb" . "💎")      ("js" . "⚙️")      ("ts" . "⚙️")
+  ;;        ("json" . "🗂️")    ("md" . "📝")      ("txt" . "📝")     ("html" . "🌐")
+  ;;        ("css" . "🎨")     ("scss" . "🎨")    ("png" . "🖼️")    ("jpg" . "🖼️")
+  ;;        ("jpeg" . "🖼️")   ("gif" . "🖼️")    ("svg" . "🖼️")    ("pdf" . "📄")
+  ;;        ("zip" . "📦")     ("tar" . "📦")     ("gz" . "📦")      ("bz2" . "📦")
+  ;;        ("7z" . "📦")      ("org" . "📝")    ("sh" . "💻")      ("c" . "🔧")
+  ;;        ("h" . "📘")       ("cpp" . "➕")     ("hpp" . "📘")     ("py" . "🐍")
+  ;;        ("java" . "☕")    ("go" . "🌍")      ("rs" . "💨")      ("php" . "🐘")
+  ;;        ("pl" . "🐍")      ("lua" . "🎮")     ("ps1" . "🔧")     ("exe" . "⚡")
+  ;;        ("dll" . "🔌")     ("bat" . "⚡")      ("yaml" . "⚙️")    ("toml" . "⚙️")
+  ;;        ("ini" . "⚙️")     ("csv" . "📊")     ("xls" . "📊")     ("xlsx" . "📊")
+  ;;        ("sql" . "🗄️")    ("log" . "📝")     ("apk" . "📱")     ("dmg" . "💻")
+  ;;        ("iso" . "💿")     ("torrent" . "⏳") ("bak" . "🗃️")    ("tmp" . "⚠️")
+  ;;        ("desktop" . "🖥️") ("md5" . "🔐")     ("sha256" . "🔐")  ("pem" . "🔐")
+  ;;        ("sqlite" . "🗄️")  ("db" . "🗄️")
+  ;;        ("mp3" . "🎶")     ("wav" . "🎶")     ("flac" . "🎶")
+  ;;        ("ogg" . "🎶")     ("m4a" . "🎶")     ("mp4" . "🎬")     ("avi" . "🎬")
+  ;;        ("mov" . "🎬")     ("mkv" . "🎬")     ("webm" . "🎬")    ("flv" . "🎬")
+  ;;        ("ico" . "🖼️")     ("ttf" . "🔠")     ("otf" . "🔠")     ("eot" . "🔠")
+  ;;        ("woff" . "🔠")    ("woff2" . "🔠")   ("epub" . "📚")    ("mobi" . "📚")
+  ;;        ("azw3" . "📚")    ("fb2" . "📚")     ("chm" . "📚")     ("tex" . "📚")
+  ;;        ("bib" . "📚")     ("apk" . "📱")     ("rar" . "📦")     ("xz" . "📦")
+  ;;        ("zst" . "📦")     ("tar.xz" . "📦")  ("tar.zst" . "📦") ("tar.gz" . "📦")
+  ;;        ("tgz" . "📦")     ("bz2" . "📦")     ("mpg" . "🎬")     ("webp" . "🖼️")
+  ;;        ("flv" . "🎬")     ("3gp" . "🎬")     ("ogv" . "🎬")     ("srt" . "🔠")
+  ;;        ("vtt" . "🔠")     ("cue" . "📀"))
+  ;;     "Icons for specific file extensions in Dired.")
+
+  ;;   (defun emacs-solo/dired-icons-icon-for-file (file)
+  ;;     (if (file-directory-p file)
+  ;;          "📁"
+  ;;       (let* ((ext (file-name-extension file))
+  ;;               (icon (and ext (assoc-default (downcase ext) emacs-solo/dired-icons-file-icons))))
+  ;;          (or icon "📄"))))
+
+  ;;   (defun emacs-solo/dired-icons-icons-regexp ()
+  ;;     "Return a regexp that matches any icon we use."
+  ;;     (let ((icons (mapcar #'cdr emacs-solo/dired-icons-file-icons)))
+  ;;       (concat "^\\(" (regexp-opt (cons "📁" icons)) "\\) ")))
+
+  ;;   (defun emacs-solo/dired-icons-add-icons ()
+  ;;     "Add icons to filenames in Dired buffer."
+  ;;     (when (derived-mode-p 'dired-mode)
+  ;;       (let ((inhibit-read-only t)
+  ;;              (icon-regex (emacs-solo/dired-icons-icons-regexp)))
+  ;;          (save-excursion
+  ;;            (goto-char (point-min))
+  ;;            (while (not (eobp))
+  ;;              (condition-case nil
+  ;;                    (when-let ((file (dired-get-filename nil t)))
+  ;;                      (dired-move-to-filename)
+  ;;                      (unless (looking-at-p icon-regex)
+  ;;                        (insert (concat (emacs-solo/dired-icons-icon-for-file file) " "))))
+  ;;                (error nil))  ;; gracefully skip invalid lines
+  ;;              (forward-line 1))))))
+
+  ;;   (add-hook 'dired-after-readin-hook #'emacs-solo/dired-icons-add-icons))
+
+  (use-package wdired
+    :ensure nil
+    :config
+    (setopt wdired-allow-to-change-permissions t
+            wdired-allow-to-redirect-links t)
+
+    ;; Rebind "r" to enter wdired in evilified dired
+    (with-eval-after-load 'dired
+      (evil-define-key 'normal dired-mode-map
+        "r" 'wdired-change-to-wdired-mode)))
+
+  (use-package nerd-icons-dired
+    :straight t
+    :hook
+    (dired-mode . nerd-icons-dired-mode))
+#+end_src
+
+* Calc
+
+#+begin_src emacs-lisp
+  (use-package calc
+    :defer t)
+
+  ;; (use-package casual-calc
+  ;;   :bind (:map calc-mode-map ("C-x o" . casual-calc-tmenu)
+  ;;          :map calc-alg-map ("C-x o" . casual-calc-tmenu))
+  ;;   :after (calc))
+#+end_src
+
+* Proof General
+
+#+begin_src emacs-lisp
+  (use-package proof-general)
+#+end_src
