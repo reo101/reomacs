@@ -627,6 +627,94 @@ Use to comment out blocks of code without disabling them with semicolons."
 
   (add-to-list 'org-structure-template-alist
                '("el" . "src emacs-lisp"))
+
+  (defun reo101/org-l2-to-markdown-clipboard (&optional level-offset)
+    "Get the contents of the surrounding level 2 heading (** Heading),
+  convert to markdown, copy to clipboard, and clean up all buffers and windows.
+  Optional LEVEL-OFFSET (default 0) offsets heading levels in the output.
+  For example, with LEVEL-OFFSET=1, level 3 headings become level 2 (##) in markdown."
+    (interactive "P")
+    ;; Process the prefix argument
+    (when (and level-offset (not (numberp level-offset)))
+      (setq level-offset (prefix-numeric-value level-offset)))
+    (setq level-offset (or level-offset 0))
+    
+    (save-window-excursion
+      (let ((temp-buf (generate-new-buffer "*org-to-md-temp*"))
+            content-start end heading)
+        (unwind-protect
+            (progn
+              ;; Find the level 2 heading
+              (unless (org-at-heading-p)
+                (org-back-to-heading t))
+              
+              ;; If we're not on a level 2 heading, search for one
+              (when (not (= (org-current-level) 2))
+                (while (and (not (= (org-current-level) 2))
+                           (org-up-heading-safe))))
+              
+              ;; If we didn't find a level 2 heading, error out
+              (unless (= (org-current-level) 2)
+                (error "No level 2 heading found"))
+              
+              ;; Get the heading text for feedback
+              (setq heading (org-get-heading t t t t))
+              
+              ;; Move past the heading to get only the content
+              (forward-line 1)
+              (setq content-start (point))
+              
+              ;; Get the end of the heading content
+              (org-end-of-subtree t t)
+              (setq end (point))
+              
+              ;; Extract just the content (not the heading itself)
+              (let ((content (buffer-substring-no-properties content-start end)))
+                (with-current-buffer temp-buf
+                  (org-mode)
+                  (insert content)
+                  
+                  ;; Configure export options to avoid problematic elements
+                  (let ((org-export-with-toc nil)           ;; No table of contents
+                        (org-export-with-timestamps nil)    ;; No timestamps
+                        (org-export-with-section-numbers nil) ;; No section numbers
+                        (org-export-with-broken-links t)    ;; Don't fail on broken links
+                        (org-export-with-smart-quotes nil)  ;; No smart quotes
+                        (org-md-headline-style 'atx)        ;; Use # style headings
+                        ;; Function to transform heading level
+                        (org-export-filter-headline-functions
+                         (list 
+                          (lambda (text backend info)
+                            (when (eq backend 'md)
+                              ;; Apply level offset by adjusting number of # marks
+                              (if (> level-offset 0)
+                                  (replace-regexp-in-string
+                                   (rx string-start (group (one-or-more "#")))
+                                   (lambda (match)
+                                     (let* ((hashes (match-string 1 match))
+                                            (level (length hashes))
+                                            ;; Apply offset and ensure we have at least one #
+                                            (new-level (max 1 (- level level-offset))))
+                                       (make-string new-level ?#)))
+                                   text)
+                                text))))))
+                    
+                    ;; Export to markdown string
+                    (let ((md-content (org-export-string-as (buffer-string) 'md t)))
+                      ;; Remove the anchor tags that might still be present
+                      (setq md-content (replace-regexp-in-string "<a id=\"[^\"]+\"></a>" "" md-content))
+                      
+                      ;; Copy to clipboard
+                      (kill-new md-content)
+                      (message "Content from heading \"%s\" converted to markdown and copied to clipboard (level offset: %d)" 
+                               heading level-offset)))
+                  ))
+              )
+          ;; Cleanup in all cases
+          (when (buffer-live-p temp-buf)
+            (kill-buffer temp-buf))
+          (when (get-buffer "*Org MD Export*")
+            (kill-buffer "*Org MD Export*"))))))
 #+end_src
 
 ** Tex
