@@ -97,6 +97,12 @@ Use to comment out blocks of code without disabling them with semicolons."
 
 * UI
 
+** Theme
+
+#+begin_src emacs-lisp
+  (load-theme 'modus-vivendi-tinted t)
+#+end_src
+
 ** Scratch
 
 #+begin_src emacs-lisp
