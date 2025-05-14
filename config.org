@@ -832,3 +832,435 @@ Use to comment out blocks of code without disabling them with semicolons."
 #+begin_src emacs-lisp
   (use-package proof-general)
 #+end_src
+
+Adapted from https://github.com/jamescherti/minimal-emacs.d/
+
+* Core Settings
+
+** Basic UI Improvements
+Quick UI optimizations for better performance and less clutter.
+
+#+begin_src emacs-lisp
+  ;; Remove unnecessary UI elements 
+  (setq ring-bell-function #'ignore)       ; No beeping or blinking
+  (setq visible-bell nil)                  ; Disable visual bell
+  (blink-cursor-mode -1)                   ; Disable cursor blinking
+  (setq blink-matching-paren nil)          ; Don't blink matching parens
+
+  ;; Position underlines at the descent line instead of the baseline
+  (setq x-underline-at-descent-line t)
+
+  ;; Use "…" instead of "..." for truncated text
+  (setq truncate-string-ellipsis "…")
+#+end_src
+
+** Performance Optimizations
+Performance tweaks to make Emacs more responsive.
+
+#+begin_src emacs-lisp
+  ;; UI update optimizations
+  (setq idle-update-delay 1.0)             ; Less frequent UI updates
+  (setq fast-but-imprecise-scrolling t)    ; Faster scrolling
+  (setq redisplay-skip-fontification-on-input t)
+  
+  ;; Disable cursor in non-focused windows
+  (setq-default cursor-in-non-selected-windows nil)
+  (setq highlight-nonselected-windows nil)
+  
+  ;; GC optimizations
+  (setq gc-cons-threshold 16777216)        ; 16mb
+  (setq gc-cons-percentage 0.1)
+#+end_src
+
+** Minibuffer Improvements
+
+#+begin_src emacs-lisp
+  ;; Allow nested minibuffers
+  (setq enable-recursive-minibuffers t)
+  
+  ;; Keep the cursor out of read-only portions of the minibuffer
+  (setq minibuffer-prompt-properties
+        '(read-only t intangible t cursor-intangible t face minibuffer-prompt))
+  (add-hook 'minibuffer-setup-hook #'cursor-intangible-mode)
+  
+  ;; Allow shorter responses: "y" for yes and "n" for no
+  (setq read-answer-short t)
+  (if (boundp 'use-short-answers)
+      (setq use-short-answers t)
+    (advice-add 'yes-or-no-p :override #'y-or-n-p))
+#+end_src
+
+* File Handling
+
+** File Saving and Backup
+
+#+begin_src emacs-lisp
+  ;; Backup configuration
+  (use-package files
+    :straight nil
+    :custom
+    (create-lockfiles nil)                 ; No lockfiles
+    (make-backup-files t)                  ; Enable backups
+    (backup-by-copying t)                  ; Copy files for backup instead of renaming
+    (backup-by-copying-when-linked t)      ; Copy linked files
+    (version-control t)                    ; Use version numbers for backups
+    (delete-old-versions t)                ; Auto-delete old backups
+    (kept-new-versions 5)                  ; Keep 5 newest versions
+    (kept-old-versions 5)                  ; Keep 5 oldest versions
+    :config
+    (setq backup-directory-alist
+          `(("." . ,(expand-file-name "backup" user-emacs-directory))))
+    (setq tramp-backup-directory-alist backup-directory-alist))
+#+end_src
+
+** Auto Save
+
+#+begin_src emacs-lisp
+  (use-package files
+    :straight nil
+    :custom
+    (auto-save-default t)                  ; Enable auto-save
+    (auto-save-no-message t)               ; Silence auto-save messages
+    (auto-save-include-big-deletions t)    ; Don't disable auto-save after large deletions
+    (kill-buffer-delete-auto-save-files t) ; Delete auto-save files when buffer is killed
+    :config
+    (setq auto-save-list-file-prefix
+          (expand-file-name "autosave/" user-emacs-directory))
+    (setq tramp-auto-save-directory
+          (expand-file-name "tramp-autosave/" user-emacs-directory)))
+#+end_src
+
+** Auto Revert
+Auto-update buffers when files change on disk.
+
+#+begin_src emacs-lisp
+  (use-package autorevert
+    :straight nil
+    :hook (after-init . global-auto-revert-mode)
+    :custom
+    (revert-without-query '("."))           ; Don't prompt for revert
+    (auto-revert-stop-on-user-input nil)    ; Don't interrupt auto-revert
+    (auto-revert-verbose t)                 ; Show auto-revert messages
+    (global-auto-revert-non-file-buffers t) ; Revert Dired and other buffers too
+    (global-auto-revert-ignore-modes '(Buffer-menu-mode)))
+#+end_src
+
+** Recent Files
+
+#+begin_src emacs-lisp
+  (use-package recentf
+    :straight nil
+    :hook (after-init . recentf-mode)
+    :custom
+    (recentf-max-saved-items 300)          ; Default is only 20
+    (recentf-max-menu-items 15)
+    (recentf-auto-cleanup (if (daemonp) 300 'never))
+    :config
+    (setq recentf-exclude (list "^/\\(?:ssh\\|su\\|sudo\\)?:")))
+#+end_src
+
+** Save Place
+Remember cursor position in files.
+
+#+begin_src emacs-lisp
+  (use-package saveplace
+    :straight nil
+    :hook (after-init . save-place-mode)
+    :custom
+    (save-place-limit 600)
+    :config
+    (setq save-place-file (expand-file-name "saveplace" user-emacs-directory)))
+#+end_src
+
+** Save History
+Preserve minibuffer history between sessions.
+
+#+begin_src emacs-lisp
+  (use-package savehist
+    :straight nil
+    :hook (after-init . savehist-mode)
+    :custom
+    (history-length 300)
+    (savehist-save-minibuffer-history t)
+    :config
+    (setq savehist-additional-variables
+          '(kill-ring                      ; clipboard
+            register-alist                 ; macros
+            mark-ring global-mark-ring     ; marks
+            search-ring regexp-search-ring))) ; searches
+#+end_src
+
+* Text Editing
+
+** Indentation and Formatting
+
+#+begin_src emacs-lisp
+  ;; Indentation settings
+  (setq-default indent-tabs-mode nil)      ; Use spaces instead of tabs
+  (setq-default tab-width 4)               ; Set tab width to 4 spaces
+  (setq-default tab-always-indent nil)     ; Enable TAB for both indent and completion
+  
+  ;; Line settings
+  (setq-default fill-column 80)            ; Wrap at 80 columns
+  (setq require-final-newline t)           ; Always end files with newline
+  (setq sentence-end-double-space nil)     ; No double space after sentences
+  (setq-default word-wrap t)               ; Wrap at word boundaries
+  
+  ;; Better line handling
+  (setq-default truncate-lines t)          ; Disable line wrapping by default
+  (setq truncate-partial-width-windows nil) ; Allow wrapping in split windows
+#+end_src
+
+** Undo Settings
+
+#+begin_src emacs-lisp
+  (use-package simple
+    :straight nil
+    :custom
+    (undo-limit (* 13 160000))
+    (undo-strong-limit (* 13 240000))
+    (undo-outer-limit (* 13 24000000)))
+#+end_src
+
+** Scrolling
+
+#+begin_src emacs-lisp
+  ;; Smooth scrolling settings
+  (setq scroll-conservatively 101)         ; Never recenter point
+  (setq scroll-margin 0)                   ; No margin at top and bottom
+  (setq scroll-preserve-screen-position t) ; Keep cursor position when scrolling
+  (setq scroll-error-top-bottom t)         ; Move to buffer limits before signaling error
+  (setq auto-window-vscroll nil)           ; Disable automatic vertical scroll adjustments
+  
+  ;; Horizontal scrolling
+  (setq hscroll-margin 2)
+  (setq hscroll-step 1)
+#+end_src
+
+* UI and Display
+
+** Windows and Frames
+
+#+begin_src emacs-lisp
+  ;; Window splitting preference
+  (setq split-width-threshold 170)         ; Prefer vertical splits
+  (setq split-height-threshold nil)
+  
+  ;; Frame resizing
+  (setq frame-resize-pixelwise t)          ; Resize frames pixel by pixel
+  (setq window-resize-pixelwise nil)       ; But not windows
+  
+  ;; Window dividers
+  (setq window-divider-default-bottom-width 1)
+  (setq window-divider-default-right-width 1)
+  (setq window-divider-default-places t)
+  
+  ;; Fringe settings
+  (setq-default left-fringe-width 8)
+  (setq-default right-fringe-width 8)
+  (setq-default indicate-buffer-boundaries nil)
+  (setq-default indicate-empty-lines nil)
+#+end_src
+
+** Buffer Management
+
+#+begin_src emacs-lisp
+  ;; Buffer naming
+  (use-package uniquify
+    :straight nil
+    :custom
+    (uniquify-buffer-name-style 'forward))
+  
+  ;; Skip confirmation for new files/buffers
+  (setq confirm-nonexistent-file-or-buffer nil)
+#+end_src
+
+* Programming
+
+** Show-Paren
+Highlight matching parentheses.
+
+#+begin_src emacs-lisp
+  (use-package paren
+    :straight nil
+    :hook (after-init . show-paren-mode)
+    :custom
+    (show-paren-delay 0.1)
+    (show-paren-highlight-openparen t)
+    (show-paren-when-point-inside-paren t)
+    (show-paren-when-point-in-periphery t))
+#+end_src
+
+** Compilation
+
+#+begin_src emacs-lisp
+  (use-package compile
+    :straight nil
+    :custom
+    (compilation-always-kill t)            ; Always kill running compilation
+    (compilation-ask-about-save nil)       ; Save without asking
+    (compilation-scroll-output 'first-error) ; Scroll until first error
+    (next-error-recenter '(4)))            ; Recenter when jumping to errors
+#+end_src
+
+** Eglot (LSP client)
+
+#+begin_src emacs-lisp
+  (use-package eglot
+    :straight nil
+    :custom
+    (eglot-sync-connect 1)                 ; Shorter connect timeout
+    (eglot-autoshutdown t)                 ; Auto shutdown when buffer closed
+    (eglot-extend-to-xref t)               ; Enable in xref-referenced files
+    (eglot-events-buffer-size 0)           ; Disable events buffer (performance)
+    (eglot-report-progress nil))           ; Reduce minibuffer noise
+#+end_src
+
+** Flymake
+
++begin_src emacs-lisp
+  (use-package flymake
+    :straight nil
+    :custom
+    (flymake-fringe-indicator-position 'left-fringe)
+    (flymake-show-diagnostics-at-end-of-line nil)
+    (flymake-suppress-zero-counters t)     ; Hide error counts when zero
+    (flymake-wrap-around nil))             ; Don't wrap when navigating errors
+#+end_src
+
+** Xref
+
+#+begin_src emacs-lisp
+  (use-package xref
+    :straight nil
+    :custom
+    (xref-show-definitions-function 'xref-show-definitions-completing-read)
+    (xref-show-xrefs-function 'xref-show-definitions-completing-read))
+#+end_src
+
+* File Modes
+
+** Dired Improvements
+
+#+begin_src emacs-lisp
+  (use-package dired
+    :straight nil
+    :custom
+    (dired-free-space nil)                 ; Don't show free space
+    (dired-dwim-target t)                  ; Smart target for copy/move
+    (dired-deletion-confirmer 'y-or-n-p)   ; Simpler confirmation
+    (dired-filter-verbose nil)             ; Reduce noise
+    (dired-recursive-deletes 'top)         ; Simplify recursive deletes
+    (dired-recursive-copies 'always)       ; Always copy recursively
+    (dired-create-destination-dirs 'ask)   ; Ask to create directories
+    (dired-clean-confirm-killing-deleted-buffers nil) ; Don't confirm buffer kills
+    (dired-vc-rename-file t)               ; Use VC for renames
+    (image-dired-thumb-size 150)           ; Larger thumbnails
+    
+    ;; ls-lisp settings
+    (ls-lisp-verbosity nil)
+    (ls-lisp-dirs-first t)
+    
+    ;; Omit mode settings
+    (dired-omit-verbose nil)
+    :config
+    (setq dired-omit-files (concat "\\`[.]\\'")))
+#+end_src
+
+** Ediff
+
+#+begin_src emacs-lisp
+  (use-package ediff
+    :straight nil
+    :custom
+    (ediff-window-setup-function 'ediff-setup-windows-plain)
+    (ediff-split-window-function 'split-window-horizontally))
+#+end_src
+
+* Miscellaneous
+
+** Help System
+
+#+begin_src emacs-lisp
+  (use-package help
+    :straight nil
+    :custom
+    (apropos-do-all t)                     ; More extensive search
+    (help-enable-completion-autoload nil)  ; Don't autoload for completion
+    (help-enable-autoload nil)
+    (help-enable-symbol-autoload nil)
+    (help-window-select t))                ; Focus help windows
+#+end_src
+
+** Spell Checking
+
+#+begin_src emacs-lisp
+  (use-package flyspell
+    :straight nil
+    :custom
+    (flyspell-issue-welcome-flag nil)
+    (flyspell-issue-message-flag nil))     ; Improves performance
+  
+  (use-package ispell
+    :straight nil
+    :custom
+    (ispell-silently-savep t)
+    (text-mode-ispell-word-completion nil)) ; For Emacs 30+
+#+end_src
+
+** Abbrev and Dabbrev
+
+#+begin_src emacs-lisp
+  (use-package abbrev
+    :straight nil
+    :custom
+    (save-abbrevs 'silently)
+    :config
+    (setq abbrev-file-name (expand-file-name "abbrev_defs" user-emacs-directory)))
+  
+  (use-package dabbrev
+    :straight nil
+    :custom
+    (dabbrev-upcase-means-case-search t)
+    :config
+    (setq dabbrev-ignored-buffer-modes
+          '(archive-mode image-mode docview-mode tags-table-mode pdf-view-mode)))
+#+end_src
+
+** Disabled Commands
+
+#+begin_src emacs-lisp
+  ;; Enable useful commands that are disabled by default
+  (dolist (cmd '(list-timers narrow-to-region upcase-region downcase-region
+                           erase-buffer scroll-left dired-find-alternate-file))
+    (put cmd 'disabled nil))
+#+end_src
+
+* Language-Specific Settings
+
+** Python
+
+#+begin_src emacs-lisp
+  (use-package python
+    :straight nil
+    :custom
+    (python-indent-guess-indent-offset-verbose nil)) ; Less verbose indentation
+#+end_src
+
+** Shell Script
+
+#+begin_src emacs-lisp
+  (use-package sh-script
+    :straight nil
+    :custom
+    (sh-indent-after-continuation 'always))
+#+end_src
+
+* Final Configuration
+
+#+begin_src emacs-lisp
+  ;; You can add any personal configurations or overrides here
+  
+  ;; Provide the init feature
+  (provide 'init)
+#+end_src
