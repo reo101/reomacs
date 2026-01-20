@@ -1,5 +1,5 @@
-#+TITLE: Reomacs
-#+PROPERTY: header-args:emacs-lisp :tangle config.el :lexical t :noweb yes :results silent
+#+Title: Reomacs
+#+Property: Header-args:emacs-lisp :tangle config.el :lexical t :noweb yes :results silent
 
 * Prep
 
@@ -30,7 +30,7 @@ Use to comment out blocks of code without disabling them with semicolons."
 
   (add-hook 'after-save-hook #'reomacs/tangle-config-org)
   (comment
-    (reomacs/tangle-config-org))
+   (reomacs/tangle-config-org))
 #+end_src
 
 ** Defaults
@@ -93,6 +93,7 @@ Use to comment out blocks of code without disabling them with semicolons."
         (eval-print-last-sexp)))
     (load bootstrap-file nil 'nomessage))
   (setopt straight-use-package-by-default t)
+
 #+end_src
 
 * UI
@@ -130,17 +131,6 @@ Use to comment out blocks of code without disabling them with semicolons."
   (message (emacs-init-time))
 #+end_src
 
-** Nova
-
-#+begin_src emacs-lisp
-  (use-package nova
-    :straight (:host github :repo "thisisran/nova")
-    :config
-    (nova-vertico-mode 1)
-    (nova-eldoc-mode 1))
-#+end_src
-
-
 ** Scrolling
 
 #+begin_src emacs-lisp
@@ -165,11 +155,75 @@ Use to comment out blocks of code without disabling them with semicolons."
       (dash-register-info-lookup)))
 #+end_src
 
-* Modal Editing
+* Global stuff
 
-** Meow
+#+begin_src emacs-lisp
+  (use-package emacs
+    :custom
+    ;;; Emacs minibuffer configurations.
+    ;; Support opening new minibuffers from inside existing minibuffers.
+    (enable-recursive-minibuffers t)
+    ;; Hide commands in M-x which do not work in the current mode.  Vertico
+    ;; commands are hidden in normal buffers. This setting is useful beyond
+    ;; Vertico.
+    (read-extended-command-predicate #'command-completion-default-include-p)
+    ;; Do not allow the cursor in the minibuffer prompt
+    (minibuffer-prompt-properties
+     '(read-only t cursor-intangible t face minibuffer-prompt)))
+#+end_src
 
-#+begin_src emacs-lisp :tangle nil
+* Editing
+
+** Modal Editing
+
+*** Evil
+
+#+begin_src emacs-lisp
+  (use-package evil
+    :straight (:host github :repo "emacs-evil/evil")
+
+    :init
+    ;; (setopt evil-want-integration t)
+    (setopt evil-want-keybinding nil)
+    (setopt evil-want-C-u-scroll t)
+    (setopt evil-want-C-d-scroll t)
+    (setopt evil-want-C-o-jump t)
+    (setopt evil-want-C-i-jump t)
+    (setopt evil-vsplit-window-right t)
+    (setopt evil-split-window-below t)
+    (setopt evil-undo-system 'undo-redo)
+    (setopt evil-cross-lines t)
+
+    :config
+    (evil-mode 1)
+    (define-key evil-insert-state-map (kbd "C-g") 'evil-normal-state)
+
+    (evil-set-initial-state 'messages-buffer-mode 'normal)
+    (evil-set-initial-state 'dashboard-mode 'normal))
+
+  (use-package evil-collection
+    :after evil
+    :config
+    ;; (setopt evil-collection-mode-list '(dashboard dired ibuffer))
+    (evil-collection-init))
+
+  (use-package evil-tutor)
+
+  (use-package evil-goggles
+    :config
+    (evil-goggles-mode)
+
+    ;; optionally use diff-mode's faces; as a result, deleted text
+    ;; will be highlighed with `diff-removed` face which is typically
+    ;; some red color (as defined by the color theme)
+    ;; other faces such as `diff-added` will be used for other actions
+    (evil-goggles-use-diff-faces)
+    (setopt evil-goggles-duration 0.100))
+#+end_src
+
+*** Meow
+
+#+begin_src emacs-lisp :tangle no
   (defun meow-setup ()
     (meow-motion-overwrite-define-key
      '("j" . meow-next)
@@ -278,47 +332,30 @@ Use to comment out blocks of code without disabling them with semicolons."
   ;; (add-to-list 'meow-tree-sitter-major-mode-language-alist '("dart" . "dart")))  
 #+end_src
 
-** Evil
+** Leader-key gaming
 
 #+begin_src emacs-lisp
-  (use-package evil
-    :straight (:host github :repo "emacs-evil/evil")
-    :init
-    ;; (setopt evil-want-integration t)
-    (setopt evil-want-keybinding nil)
-    (setopt evil-want-C-u-scroll t)
-    (setopt evil-want-C-d-scroll t)
-    (setopt evil-want-C-o-jump t)
-    (setopt evil-want-C-i-jump t)
-    (setopt evil-vsplit-window-right t)
-    (setopt evil-split-window-below t)
-    (setopt evil-undo-system 'undo-redo)
-    ;; (setopt evil-cross-lines t) ;; Shadowed by evil-snipe
-    :config
-    (evil-mode 1)
-    (define-key evil-insert-state-map (kbd "C-g") 'evil-normal-state)
-
-    (evil-set-initial-state 'messages-buffer-mode 'normal)
-    (evil-set-initial-state 'dashboard-mode 'normal))
-
-  (use-package evil-collection
+  (use-package evil-keypad
+    :straight (:host github :repo "achyudh/evil-keypad")
     :after evil
     :config
-    ;; (setopt evil-collection-mode-list '(dashboard dired ibuffer))
-    (evil-collection-init))
+    (evil-keypad-global-mode 1))
+#+end_src
 
-  (use-package evil-tutor)
+** Which-key
 
-  (use-package evil-goggles
+#+begin_src emacs-lisp
+  ;; NOTE: which-key is built-in since Emacs 30.1
+  (use-package which-key
+    :ensure nil  ; built-in, no need to fetch
+    :custom
+    (which-key-add-column-padding 2)
+    (which-key-allow-multiple-replacements t)
+    (which-key-idle-delay 0.8)
+    (which-key-min-display-lines 6)
+    (which-key-side-window-slot -10)
     :config
-    (evil-goggles-mode)
-
-    ;; optionally use diff-mode's faces; as a result, deleted text
-    ;; will be highlighed with `diff-removed` face which is typically
-    ;; some red color (as defined by the color theme)
-    ;; other faces such as `diff-added` will be used for other actions
-    (evil-goggles-use-diff-faces)
-    (setopt evil-goggles-duration 0.100))
+    (which-key-mode 1))
 #+end_src
 
 * TreeSitter
@@ -348,8 +385,9 @@ Use to comment out blocks of code without disabling them with semicolons."
 
 * Completion
 
+** Minibuffer
+
 #+begin_src emacs-lisp
-  ;; Enable Vertico.
   (use-package vertico
     :custom
     ;; (vertico-scroll-margin 0) ;; Different scroll margin
@@ -359,25 +397,98 @@ Use to comment out blocks of code without disabling them with semicolons."
     :init
     (vertico-mode))
 
+  ;; Directory navigation extensions for vertico
+  ;; DEL deletes whole directory, RET enters directory
+  (use-package vertico-directory
+    :after vertico
+    :straight nil  ; part of vertico
+    :bind (:map vertico-map
+           ("DEL" . vertico-directory-delete-char)
+           ("M-DEL" . vertico-directory-delete-word)
+           ("RET" . vertico-directory-enter))
+    :hook (rfn-eshadow-update-overlay . vertico-directory-tidy))
+
+  ;; Optional: allows per-command display configuration
+  (use-package vertico-multiform
+    :after vertico
+    :straight nil  ; part of vertico
+    :config
+    (vertico-multiform-mode 1))
+
+  (use-package vertico-posframe
+    :straight (:host github :repo "tumashu/vertico-posframe")
+    :after vertico
+    :config
+    (vertico-posframe-mode 1))
+
   ;; Persist history over Emacs restarts. Vertico sorts by history position.
   (use-package savehist
     :init
     (savehist-mode))
 
-  ;; Emacs minibuffer configurations.
-  (use-package emacs
-    :custom
-    ;; Support opening new minibuffers from inside existing minibuffers.
-    (enable-recursive-minibuffers t)
-    ;; Hide commands in M-x which do not work in the current mode.  Vertico
-    ;; commands are hidden in normal buffers. This setting is useful beyond
-    ;; Vertico.
-    (read-extended-command-predicate #'command-completion-default-include-p)
-    ;; Do not allow the cursor in the minibuffer prompt
-    (minibuffer-prompt-properties
-     '(read-only t cursor-intangible t face minibuffer-prompt)))
+  (use-package markdown-mode)
+  ;; (defun markdown-view-mode-maybe ()
+  ;;   (cond ((and (eq major-mode 'markdown-mode) buffer-read-only) (markdown-view-mode))
+  ;;         ((and (eq major-mode 'markdown-view-mode) (not buffer-read-only)) (markdown-mode))))
+  ;; (add-hook 'read-only-mode-hook 'markdown-view-mode-maybe)
 
-  ;; Optionally use the `orderless' completion style.
+  (use-package nova
+    :disabled
+    :straight (:host github :repo "thisisran/nova")
+    :after (vertico-posframe corfu markdown-mode)
+    :config
+    (require 'nova-utils)
+
+    ;; Vertico
+    (require 'nova-vertico)
+    (nova-vertico-mode 1)
+
+    ;; Corfu
+    (require 'nova-corfu)
+    (require 'nova-corfu-popupinfo)
+    (nova-corfu-mode 1)
+    (nova-corfu-popupinfo-mode 1)
+
+    ;; Eldoc
+    (require 'nova-eldoc)
+    (nova-eldoc-mode 1))
+#+end_src
+
+** Completion Popup
+
+#+begin_src emacs-lisp
+  (use-package corfu
+    ;; Optional customizations
+    ;; :custom
+    ;; (corfu-cycle t)                ;; Enable cycling for `corfu-next/previous'
+    ;; (corfu-quit-at-boundary nil)   ;; Never quit at completion boundary
+    ;; (corfu-quit-no-match nil)      ;; Never quit, even if there is no match
+    ;; (corfu-preview-current nil)    ;; Disable current candidate preview
+    ;; (corfu-preselect 'prompt)      ;; Preselect the prompt
+    ;; (corfu-on-exact-match nil)     ;; Configure handling of exact matches
+
+    ;; Enable Corfu only for certain modes. See also `global-corfu-modes'.
+    ;; :hook ((prog-mode . corfu-mode)
+    ;;        (shell-mode . corfu-mode)
+    ;;        (eshell-mode . corfu-mode))
+
+    :init
+
+    ;; Recommended: Enable Corfu globally.  Recommended since many modes provide
+    ;; Capfs and Dabbrev can be used globally (M-/).  See also the customization
+    ;; variable `global-corfu-modes' to exclude certain modes.
+    (global-corfu-mode)
+
+    ;; Enable optional extension modes:
+    ;; (corfu-history-mode)
+    ;; (corfu-popupinfo-mode)
+    )
+
+#+end_src
+
+** Fuzzy Completion Style
+
+#+begin_src emacs-lisp
   (use-package orderless
     :custom
     ;; Configure a custom style dispatcher (see the Consult wiki)
@@ -386,8 +497,11 @@ Use to comment out blocks of code without disabling them with semicolons."
     (completion-styles '(orderless basic))
     (completion-category-defaults nil)
     (completion-category-overrides '((file (styles partial-completion)))))
+#+end_src
 
-  ;; Example configuration for Consult
+** Search and Navigation
+
+#+begin_src emacs-lisp
   (use-package consult
     ;; Replace bindings. Lazily loaded by `use-package'.
     :bind (;; C-c bindings in `mode-specific-map'
@@ -489,9 +603,12 @@ Use to comment out blocks of code without disabling them with semicolons."
     ;; You may want to use `embark-prefix-help-command' or which-key instead.
     ;; (keymap-set consult-narrow-map (concat consult-narrow-key " ?") #'consult-narrow-help)
 
-    (setopt consult-project-function #'consult--default-project--function))
+    (setopt consult-project-function #'consult--default-project-function))
+#+end_src
 
-  ;; Enable rich annotations using the Marginalia package
+** Annotations
+
+#+begin_src emacs-lisp
   (use-package marginalia
     ;; Bind `marginalia-cycle' locally in the minibuffer.  To make the binding
     ;; available in the *Completions* buffer, add it to the
@@ -506,7 +623,11 @@ Use to comment out blocks of code without disabling them with semicolons."
     ;; the mode gets enabled right away. Note that this forces loading the
     ;; package.
     (marginalia-mode))
+#+end_src
 
+** Minibuffer actions
+
+#+begin_src emacs-lisp
   (use-package embark
     :straight t
 
@@ -539,7 +660,7 @@ Use to comment out blocks of code without disabling them with semicolons."
 
   ;; Consult users will also want the embark-consult package.
   (use-package embark-consult
-    :straight t ; only need to install it, embark loads it after consult if found
+    :straight t
     :hook
     (embark-collect-mode . consult-preview-at-point-mode))
 #+end_src
@@ -591,137 +712,105 @@ Use to comment out blocks of code without disabling them with semicolons."
                    (format "(defun org-release () \"The release version of Org.\" %S)\n" version)
                    (format "(defun org-git-version () \"The truncate git commit hash of Org mode.\" %S)\n" git-version)
                    "(provide 'org-version)\n")))
-                :pin nil))
+                :pin nil)
+    :config
+    (dolist (face '((org-level-1 . 1.35)
+                    (org-level-2 . 1.3)
+                    (org-level-3 . 1.2)
+                    (org-level-4 . 1.1)
+                    (org-level-5 . 1.1)
+                    (org-level-6 . 1.1)
+                    (org-level-7 . 1.1)
+                    (org-level-8 . 1.1)))
+      (set-face-attribute (car face) nil
+                          :font "FiraCode Nerd Font"
+                          :weight 'bold
+                          :height (cdr face)))
+    (set-face-attribute 'org-document-title nil
+                        :font "FiraCode Nerd Font"
+                        :weight 'bold
+                        :height 1.8)
+
+    (setq-default prettify-symbols-alist
+                    '(("#+BEGIN_SRC" . "†")
+                      ("#+END_SRC" . "†")
+                      ("#+begin_src" . "†")
+                      ("#+end_src" . "†")
+                      (">=" . "≥")
+                      ("=>" . "⇨")))
+
+    (setq prettify-symbols-unprettify-at-point 'right-edge)
+    (add-hook 'org-mode-hook 'prettify-symbols-mode)
+
+    (add-to-list 'org-structure-template-alist
+                 '("el" . "src emacs-lisp")))
 
   (use-package org-superstar
+    :straight (:host github :repo "integral-dw/org-superstar-mode")
     :config
     (add-hook 'org-mode-hook (lambda () (org-superstar-mode 1))))
 
-  (dolist (face '((org-level-1 . 1.35)
-                  (org-level-2 . 1.3)
-                  (org-level-3 . 1.2)
-                  (org-level-4 . 1.1)
-                  (org-level-5 . 1.1)
-                  (org-level-6 . 1.1)
-                  (org-level-7 . 1.1)
-                  (org-level-8 . 1.1)))
-    (set-face-attribute (car face) nil
-                        :font "FiraCode Nerd Font"
-                        :weight 'bold
-                        :height (cdr face)))
-  (set-face-attribute 'org-document-title nil
-                      :font "FiraCode Nerd Font"
-                      :weight 'bold
-                      :height 1.8)
+  (use-package org-include-inline
+    :hook (org-mode . org-include-inline-mode))
 
-  (setq-default prettify-symbols-alist
-                  '(("#+BEGIN_SRC" . "†")
-                    ("#+END_SRC" . "†")
-                    ("#+begin_src" . "†")
-                    ("#+end_src" . "†")
-                    (">=" . "≥")
-                    ("=>" . "⇨")))
 
-  (setq prettify-symbols-unprettify-at-point 'right-edge)
-  (add-hook 'org-mode-hook 'prettify-symbols-mode)
-
-  (add-to-list 'org-structure-template-alist
-               '("el" . "src emacs-lisp"))
-
-  (defun reo101/org-l2-to-markdown-clipboard (&optional level-offset)
-    "Get the contents of the surrounding level 2 heading (** Heading),
-  convert to markdown, copy to clipboard, and clean up all buffers and windows.
-  Optional LEVEL-OFFSET (default 0) offsets heading levels in the output.
-  For example, with LEVEL-OFFSET=1, level 3 headings become level 2 (##) in markdown."
-    (interactive "P")
-    ;; Process the prefix argument
-    (when (and level-offset (not (numberp level-offset)))
-      (setq level-offset (prefix-numeric-value level-offset)))
-    (setq level-offset (or level-offset 0))
-    
-    (save-window-excursion
-      (let ((temp-buf (generate-new-buffer "*org-to-md-temp*"))
-            content-start end heading)
-        (unwind-protect
-            (progn
-              ;; Find the level 2 heading
-              (unless (org-at-heading-p)
-                (org-back-to-heading t))
-              
-              ;; If we're not on a level 2 heading, search for one
-              (when (not (= (org-current-level) 2))
-                (while (and (not (= (org-current-level) 2))
-                           (org-up-heading-safe))))
-              
-              ;; If we didn't find a level 2 heading, error out
-              (unless (= (org-current-level) 2)
-                (error "No level 2 heading found"))
-              
-              ;; Get the heading text for feedback
-              (setq heading (org-get-heading t t t t))
-              
-              ;; Move past the heading to get only the content
-              (forward-line 1)
-              (setq content-start (point))
-              
-              ;; Get the end of the heading content
-              (org-end-of-subtree t t)
-              (setq end (point))
-              
-              ;; Extract just the content (not the heading itself)
-              (let ((content (buffer-substring-no-properties content-start end)))
-                (with-current-buffer temp-buf
-                  (org-mode)
-                  (insert content)
-                  
-                  ;; Configure export options to avoid problematic elements
-                  (let ((org-export-with-toc nil)           ;; No table of contents
-                        (org-export-with-timestamps nil)    ;; No timestamps
-                        (org-export-with-section-numbers nil) ;; No section numbers
-                        (org-export-with-broken-links t)    ;; Don't fail on broken links
-                        (org-export-with-smart-quotes nil)  ;; No smart quotes
-                        (org-md-headline-style 'atx)        ;; Use # style headings
-                        ;; Function to transform heading level
-                        (org-export-filter-headline-functions
-                         (list 
-                          (lambda (text backend info)
-                            (when (eq backend 'md)
-                              ;; Apply level offset by adjusting number of # marks
-                              (if (> level-offset 0)
-                                  (replace-regexp-in-string
-                                   (rx string-start (group (one-or-more "#")))
-                                   (lambda (match)
-                                     (let* ((hashes (match-string 1 match))
-                                            (level (length hashes))
-                                            ;; Apply offset and ensure we have at least one #
-                                            (new-level (max 1 (- level level-offset))))
-                                       (make-string new-level ?#)))
-                                   text)
-                                text))))))
-                    
-                    ;; Export to markdown string
-                    (let ((md-content (org-export-string-as (buffer-string) 'md t)))
-                      ;; Remove the anchor tags that might still be present
-                      (setq md-content (replace-regexp-in-string "<a id=\"[^\"]+\"></a>" "" md-content))
-                      
-                      ;; Copy to clipboard
-                      (kill-new md-content)
-                      (message "Content from heading \"%s\" converted to markdown and copied to clipboard (level offset: %d)" 
-                               heading level-offset)))
-                  ))
-              )
-          ;; Cleanup in all cases
-          (when (buffer-live-p temp-buf)
-            (kill-buffer temp-buf))
-          (when (get-buffer "*Org MD Export*")
-            (kill-buffer "*Org MD Export*"))))))
+  ;;;###autoload
+  (defun reo101/org-heading-to-markdown-clipboard (&optional target-level md-level-offset)
+    "Export children of ancestor heading to markdown in kill-ring.
+  TARGET-LEVEL: which ancestor level to export from (default 2).
+  MD-LEVEL-OFFSET: adjust output heading levels (default 0).
+  With C-u, prompts for target level. With C-u C-u, prompts for both."
+    (interactive (cond
+                  ((equal current-prefix-arg '(16)) ; C-u C-u
+                   (list (read-number "Target heading level: " 2)
+                         (read-number "Markdown level offset: " 0)))
+                  ((equal current-prefix-arg '(4))  ; C-u
+                   (list (read-number "Target heading level: " 2) 0))
+                  (t (list 2 0))))
+    (require 'ox-md)
+    (save-excursion
+      ;; Navigate to the target-level ancestor
+      (org-back-to-heading t)
+      (while (> (org-current-level) target-level)
+        (org-up-heading-safe))
+      (-let* ((parent-level (org-current-level))
+              (parent-heading (org-get-heading t t t t))
+              (subtree-content
+               (save-restriction
+                 (org-narrow-to-subtree)
+                 (goto-char (point-min))
+                 (forward-line 1) ; skip parent heading
+                 (buffer-substring-no-properties (point) (point-max)))))
+        (-as-> subtree-content it
+               ;; Export to markdown with no TOC
+               (let ((org-export-with-toc nil)
+                     (org-export-with-section-numbers nil)
+                     (org-export-with-timestamps nil)
+                     (org-export-with-broken-links t)
+                     (org-md-headline-style 'atx))
+                 (org-export-string-as it 'md t))
+               ;; Clean up anchor tags
+               (replace-regexp-in-string "<a id=\"[^\"]+\"></a>\n?" "" it)
+               ;; Adjust heading levels to match org depth + offset
+               (replace-regexp-in-string
+                "^\\(#+\\) "
+                (lambda (match)
+                  (let* ((current-md-level (1- (length match)))
+                         (new-level (max 1 (+ current-md-level parent-level md-level-offset))))
+                    (concat (make-string new-level ?#) " ")))
+                it)
+               ;; Collapse multiple blank lines to single
+               (replace-regexp-in-string "\n\\{3,\\}" "\n\n" it)
+               ;; Trim leading/trailing whitespace
+               (string-trim it)
+               (kill-new it))
+        (message "Exported children of \"%s\" (level %d, offset %+d) to markdown"
+                 parent-heading parent-level md-level-offset))))
 #+end_src
 
 ** Tex
 
 #+begin_src emacs-lisp
-  ;; (use-package tex
-  ;;   :straight auctex)
   (use-package tex
     :straight auctex
     :defer t)
@@ -802,17 +891,105 @@ Use to comment out blocks of code without disabling them with semicolons."
     :ensure nil
     :config
     (setopt wdired-allow-to-change-permissions t
-            wdired-allow-to-redirect-links t)
+            wdired-allow-to-redirect-links t))
 
-    ;; Rebind "r" to enter wdired in evilified dired
-    (with-eval-after-load 'dired
-      (evil-define-key 'normal dired-mode-map
-        "r" 'wdired-change-to-wdired-mode)))
+    ;; ;; Rebind "r" to enter wdired in evilified dired
+    ;; (with-eval-after-load 'dired
+    ;;   (evil-define-key 'normal dired-mode-map
+    ;;     "r" 'wdired-change-to-wdired-mode)))
 
   (use-package nerd-icons-dired
     :straight t
     :hook
     (dired-mode . nerd-icons-dired-mode))
+#+end_src
+
+** WDired new files
+
+#+begin_src emacs-lisp
+(defun reo101/wdired-create-new-files-advice (orig-fun &rest args)
+  "Advise `wdired-finish-edit` to create new files and refresh.
+
+This function is designed to be used as `:around` advice. It scans the
+`wdired` buffer for lines that do not correspond to existing file
+entries (i.e., they lack the `dired-filename` text property).
+
+For each such line found:
+1. It parses the line as a new file path.
+2. It creates any non-existent parent directories recursively.
+3. It creates the new file (as an empty file).
+4. It removes the line from the buffer.
+
+After creating all new files, it calls the original `wdired-finish-edit`
+function. If any files were created by this advice, it then calls
+`revert-buffer` to refresh the dired listing."
+  (let ((files-created-p nil))
+    (save-excursion
+      ;; Go to the beginning of the buffer to start our scan.
+      (goto-char (point-min))
+
+      ;; 1. First, we collect all the lines that represent new files.
+      ;; We do this first to avoid issues with modifying the buffer while iterating over it.
+      (let ((new-entries '()))
+        (while (not (eobp))
+          (let ((line-start (point-at-bol))
+                (line-end (point-at-eol)))
+            ;; A line for a new file won't have the 'dired-filename' property.
+            (unless (get-text-property line-start 'dired-filename)
+              (let ((filename (string-trim (buffer-substring-no-properties line-start line-end))))
+                ;; We only care about lines that actually contain non-whitespace text.
+                (when (string-match-p "\\S-" filename)
+                  ;; We push the filename and its start/end positions onto the list.
+                  (push (list filename line-start line-end) new-entries))))
+            (forward-line 1)))
+
+        ;; 2. Now, process the collected new files.
+        ;; We iterate through the list we just built. The list is naturally in
+        ;; reverse order of appearance, which is perfect for deleting lines
+        ;; from the buffer without invalidating the position markers of subsequent items.
+        (when new-entries
+          (setq files-created-p t)) ; Mark that we are creating files.
+        (dolist (entry new-entries)
+          (let* ((filename (nth 0 entry))
+                 (start-pos (nth 1 entry))
+                 (end-pos (nth 2 entry))
+                 ;; Construct the full path relative to the dired buffer's directory.
+                 (full-path (expand-file-name filename default-directory))
+                 (directory (file-name-directory full-path)))
+
+            ;; Create parent directories if they don't already exist.
+            ;; The 't' argument to `make-directory` means "create parents as needed".
+            (when (and directory (not (file-directory-p directory)))
+              (make-directory directory t)
+              (message "Created directory: %s" (file-name-sans-trailing-slash directory)))
+
+            ;; Create the file itself if it doesn't exist.
+            ;; Using `with-temp-buffer` and `write-file` is a clean way to "touch" a file.
+            (unless (file-exists-p full-path)
+              (with-temp-buffer
+                (write-file full-path))
+              (message "Created file: %s" full-path))
+
+            ;; Finally, remove the processed line from the wdired buffer so the original
+            ;; function doesn't see it and get confused.
+            (goto-char start-pos)
+            ;; We delete the region including the newline character.
+            (delete-region start-pos (1+ end-pos)))))))
+
+    ;; 3. With our work done, call the original function to let it handle its business.
+    (apply orig-fun args)
+
+    ;; 4. If we created any files, refresh the dired buffer to show them.
+    (when files-created-p
+      (revert-buffer)
+      (message "Dired buffer refreshed to show new files.")))
+
+;; Add our function as "around" advice to `wdired-finish-edit`.
+;; This means our function wraps the original one.
+(advice-add 'wdired-finish-edit :around #'reo101/wdired-create-new-files-advice)
+
+;; To remove this advice later, you can run:
+;; (advice-remove 'wdired-finish-edit #'my-wdired-create-new-files-advice)
 #+end_src
 
 * Calc
@@ -831,436 +1008,4 @@ Use to comment out blocks of code without disabling them with semicolons."
 
 #+begin_src emacs-lisp
   (use-package proof-general)
-#+end_src
-
-Adapted from https://github.com/jamescherti/minimal-emacs.d/
-
-* Core Settings
-
-** Basic UI Improvements
-Quick UI optimizations for better performance and less clutter.
-
-#+begin_src emacs-lisp
-  ;; Remove unnecessary UI elements 
-  (setq ring-bell-function #'ignore)       ; No beeping or blinking
-  (setq visible-bell nil)                  ; Disable visual bell
-  (blink-cursor-mode -1)                   ; Disable cursor blinking
-  (setq blink-matching-paren nil)          ; Don't blink matching parens
-
-  ;; Position underlines at the descent line instead of the baseline
-  (setq x-underline-at-descent-line t)
-
-  ;; Use "…" instead of "..." for truncated text
-  (setq truncate-string-ellipsis "…")
-#+end_src
-
-** Performance Optimizations
-Performance tweaks to make Emacs more responsive.
-
-#+begin_src emacs-lisp
-  ;; UI update optimizations
-  (setq idle-update-delay 1.0)             ; Less frequent UI updates
-  (setq fast-but-imprecise-scrolling t)    ; Faster scrolling
-  (setq redisplay-skip-fontification-on-input t)
-  
-  ;; Disable cursor in non-focused windows
-  (setq-default cursor-in-non-selected-windows nil)
-  (setq highlight-nonselected-windows nil)
-  
-  ;; GC optimizations
-  (setq gc-cons-threshold 16777216)        ; 16mb
-  (setq gc-cons-percentage 0.1)
-#+end_src
-
-** Minibuffer Improvements
-
-#+begin_src emacs-lisp
-  ;; Allow nested minibuffers
-  (setq enable-recursive-minibuffers t)
-  
-  ;; Keep the cursor out of read-only portions of the minibuffer
-  (setq minibuffer-prompt-properties
-        '(read-only t intangible t cursor-intangible t face minibuffer-prompt))
-  (add-hook 'minibuffer-setup-hook #'cursor-intangible-mode)
-  
-  ;; Allow shorter responses: "y" for yes and "n" for no
-  (setq read-answer-short t)
-  (if (boundp 'use-short-answers)
-      (setq use-short-answers t)
-    (advice-add 'yes-or-no-p :override #'y-or-n-p))
-#+end_src
-
-* File Handling
-
-** File Saving and Backup
-
-#+begin_src emacs-lisp
-  ;; Backup configuration
-  (use-package files
-    :straight nil
-    :custom
-    (create-lockfiles nil)                 ; No lockfiles
-    (make-backup-files t)                  ; Enable backups
-    (backup-by-copying t)                  ; Copy files for backup instead of renaming
-    (backup-by-copying-when-linked t)      ; Copy linked files
-    (version-control t)                    ; Use version numbers for backups
-    (delete-old-versions t)                ; Auto-delete old backups
-    (kept-new-versions 5)                  ; Keep 5 newest versions
-    (kept-old-versions 5)                  ; Keep 5 oldest versions
-    :config
-    (setq backup-directory-alist
-          `(("." . ,(expand-file-name "backup" user-emacs-directory))))
-    (setq tramp-backup-directory-alist backup-directory-alist))
-#+end_src
-
-** Auto Save
-
-#+begin_src emacs-lisp
-  (use-package files
-    :straight nil
-    :custom
-    (auto-save-default t)                  ; Enable auto-save
-    (auto-save-no-message t)               ; Silence auto-save messages
-    (auto-save-include-big-deletions t)    ; Don't disable auto-save after large deletions
-    (kill-buffer-delete-auto-save-files t) ; Delete auto-save files when buffer is killed
-    :config
-    (setq auto-save-list-file-prefix
-          (expand-file-name "autosave/" user-emacs-directory))
-    (setq tramp-auto-save-directory
-          (expand-file-name "tramp-autosave/" user-emacs-directory)))
-#+end_src
-
-** Auto Revert
-Auto-update buffers when files change on disk.
-
-#+begin_src emacs-lisp
-  (use-package autorevert
-    :straight nil
-    :hook (after-init . global-auto-revert-mode)
-    :custom
-    (revert-without-query '("."))           ; Don't prompt for revert
-    (auto-revert-stop-on-user-input nil)    ; Don't interrupt auto-revert
-    (auto-revert-verbose t)                 ; Show auto-revert messages
-    (global-auto-revert-non-file-buffers t) ; Revert Dired and other buffers too
-    (global-auto-revert-ignore-modes '(Buffer-menu-mode)))
-#+end_src
-
-** Recent Files
-
-#+begin_src emacs-lisp
-  (use-package recentf
-    :straight nil
-    :hook (after-init . recentf-mode)
-    :custom
-    (recentf-max-saved-items 300)          ; Default is only 20
-    (recentf-max-menu-items 15)
-    (recentf-auto-cleanup (if (daemonp) 300 'never))
-    :config
-    (setq recentf-exclude (list "^/\\(?:ssh\\|su\\|sudo\\)?:")))
-#+end_src
-
-** Save Place
-Remember cursor position in files.
-
-#+begin_src emacs-lisp
-  (use-package saveplace
-    :straight nil
-    :hook (after-init . save-place-mode)
-    :custom
-    (save-place-limit 600)
-    :config
-    (setq save-place-file (expand-file-name "saveplace" user-emacs-directory)))
-#+end_src
-
-** Save History
-Preserve minibuffer history between sessions.
-
-#+begin_src emacs-lisp
-  (use-package savehist
-    :straight nil
-    :hook (after-init . savehist-mode)
-    :custom
-    (history-length 300)
-    (savehist-save-minibuffer-history t)
-    :config
-    (setq savehist-additional-variables
-          '(kill-ring                      ; clipboard
-            register-alist                 ; macros
-            mark-ring global-mark-ring     ; marks
-            search-ring regexp-search-ring))) ; searches
-#+end_src
-
-* Text Editing
-
-** Indentation and Formatting
-
-#+begin_src emacs-lisp
-  ;; Indentation settings
-  (setq-default indent-tabs-mode nil)      ; Use spaces instead of tabs
-  (setq-default tab-width 4)               ; Set tab width to 4 spaces
-  (setq-default tab-always-indent nil)     ; Enable TAB for both indent and completion
-  
-  ;; Line settings
-  (setq-default fill-column 80)            ; Wrap at 80 columns
-  (setq require-final-newline t)           ; Always end files with newline
-  (setq sentence-end-double-space nil)     ; No double space after sentences
-  (setq-default word-wrap t)               ; Wrap at word boundaries
-  
-  ;; Better line handling
-  (setq-default truncate-lines t)          ; Disable line wrapping by default
-  (setq truncate-partial-width-windows nil) ; Allow wrapping in split windows
-#+end_src
-
-** Undo Settings
-
-#+begin_src emacs-lisp
-  (use-package simple
-    :straight nil
-    :custom
-    (undo-limit (* 13 160000))
-    (undo-strong-limit (* 13 240000))
-    (undo-outer-limit (* 13 24000000)))
-#+end_src
-
-** Scrolling
-
-#+begin_src emacs-lisp
-  ;; Smooth scrolling settings
-  (setq scroll-conservatively 101)         ; Never recenter point
-  (setq scroll-margin 0)                   ; No margin at top and bottom
-  (setq scroll-preserve-screen-position t) ; Keep cursor position when scrolling
-  (setq scroll-error-top-bottom t)         ; Move to buffer limits before signaling error
-  (setq auto-window-vscroll nil)           ; Disable automatic vertical scroll adjustments
-  
-  ;; Horizontal scrolling
-  (setq hscroll-margin 2)
-  (setq hscroll-step 1)
-#+end_src
-
-* UI and Display
-
-** Windows and Frames
-
-#+begin_src emacs-lisp
-  ;; Window splitting preference
-  (setq split-width-threshold 170)         ; Prefer vertical splits
-  (setq split-height-threshold nil)
-  
-  ;; Frame resizing
-  (setq frame-resize-pixelwise t)          ; Resize frames pixel by pixel
-  (setq window-resize-pixelwise nil)       ; But not windows
-  
-  ;; Window dividers
-  (setq window-divider-default-bottom-width 1)
-  (setq window-divider-default-right-width 1)
-  (setq window-divider-default-places t)
-  
-  ;; Fringe settings
-  (setq-default left-fringe-width 8)
-  (setq-default right-fringe-width 8)
-  (setq-default indicate-buffer-boundaries nil)
-  (setq-default indicate-empty-lines nil)
-#+end_src
-
-** Buffer Management
-
-#+begin_src emacs-lisp
-  ;; Buffer naming
-  (use-package uniquify
-    :straight nil
-    :custom
-    (uniquify-buffer-name-style 'forward))
-  
-  ;; Skip confirmation for new files/buffers
-  (setq confirm-nonexistent-file-or-buffer nil)
-#+end_src
-
-* Programming
-
-** Show-Paren
-Highlight matching parentheses.
-
-#+begin_src emacs-lisp
-  (use-package paren
-    :straight nil
-    :hook (after-init . show-paren-mode)
-    :custom
-    (show-paren-delay 0.1)
-    (show-paren-highlight-openparen t)
-    (show-paren-when-point-inside-paren t)
-    (show-paren-when-point-in-periphery t))
-#+end_src
-
-** Compilation
-
-#+begin_src emacs-lisp
-  (use-package compile
-    :straight nil
-    :custom
-    (compilation-always-kill t)            ; Always kill running compilation
-    (compilation-ask-about-save nil)       ; Save without asking
-    (compilation-scroll-output 'first-error) ; Scroll until first error
-    (next-error-recenter '(4)))            ; Recenter when jumping to errors
-#+end_src
-
-** Eglot (LSP client)
-
-#+begin_src emacs-lisp
-  (use-package eglot
-    :straight nil
-    :custom
-    (eglot-sync-connect 1)                 ; Shorter connect timeout
-    (eglot-autoshutdown t)                 ; Auto shutdown when buffer closed
-    (eglot-extend-to-xref t)               ; Enable in xref-referenced files
-    (eglot-events-buffer-size 0)           ; Disable events buffer (performance)
-    (eglot-report-progress nil))           ; Reduce minibuffer noise
-#+end_src
-
-** Flymake
-
-+begin_src emacs-lisp
-  (use-package flymake
-    :straight nil
-    :custom
-    (flymake-fringe-indicator-position 'left-fringe)
-    (flymake-show-diagnostics-at-end-of-line nil)
-    (flymake-suppress-zero-counters t)     ; Hide error counts when zero
-    (flymake-wrap-around nil))             ; Don't wrap when navigating errors
-#+end_src
-
-** Xref
-
-#+begin_src emacs-lisp
-  (use-package xref
-    :straight nil
-    :custom
-    (xref-show-definitions-function 'xref-show-definitions-completing-read)
-    (xref-show-xrefs-function 'xref-show-definitions-completing-read))
-#+end_src
-
-* File Modes
-
-** Dired Improvements
-
-#+begin_src emacs-lisp
-  (use-package dired
-    :straight nil
-    :custom
-    (dired-free-space nil)                 ; Don't show free space
-    (dired-dwim-target t)                  ; Smart target for copy/move
-    (dired-deletion-confirmer 'y-or-n-p)   ; Simpler confirmation
-    (dired-filter-verbose nil)             ; Reduce noise
-    (dired-recursive-deletes 'top)         ; Simplify recursive deletes
-    (dired-recursive-copies 'always)       ; Always copy recursively
-    (dired-create-destination-dirs 'ask)   ; Ask to create directories
-    (dired-clean-confirm-killing-deleted-buffers nil) ; Don't confirm buffer kills
-    (dired-vc-rename-file t)               ; Use VC for renames
-    (image-dired-thumb-size 150)           ; Larger thumbnails
-    
-    ;; ls-lisp settings
-    (ls-lisp-verbosity nil)
-    (ls-lisp-dirs-first t)
-    
-    ;; Omit mode settings
-    (dired-omit-verbose nil)
-    :config
-    (setq dired-omit-files (concat "\\`[.]\\'")))
-#+end_src
-
-** Ediff
-
-#+begin_src emacs-lisp
-  (use-package ediff
-    :straight nil
-    :custom
-    (ediff-window-setup-function 'ediff-setup-windows-plain)
-    (ediff-split-window-function 'split-window-horizontally))
-#+end_src
-
-* Miscellaneous
-
-** Help System
-
-#+begin_src emacs-lisp
-  (use-package help
-    :straight nil
-    :custom
-    (apropos-do-all t)                     ; More extensive search
-    (help-enable-completion-autoload nil)  ; Don't autoload for completion
-    (help-enable-autoload nil)
-    (help-enable-symbol-autoload nil)
-    (help-window-select t))                ; Focus help windows
-#+end_src
-
-** Spell Checking
-
-#+begin_src emacs-lisp
-  (use-package flyspell
-    :straight nil
-    :custom
-    (flyspell-issue-welcome-flag nil)
-    (flyspell-issue-message-flag nil))     ; Improves performance
-  
-  (use-package ispell
-    :straight nil
-    :custom
-    (ispell-silently-savep t)
-    (text-mode-ispell-word-completion nil)) ; For Emacs 30+
-#+end_src
-
-** Abbrev and Dabbrev
-
-#+begin_src emacs-lisp
-  (use-package abbrev
-    :straight nil
-    :custom
-    (save-abbrevs 'silently)
-    :config
-    (setq abbrev-file-name (expand-file-name "abbrev_defs" user-emacs-directory)))
-  
-  (use-package dabbrev
-    :straight nil
-    :custom
-    (dabbrev-upcase-means-case-search t)
-    :config
-    (setq dabbrev-ignored-buffer-modes
-          '(archive-mode image-mode docview-mode tags-table-mode pdf-view-mode)))
-#+end_src
-
-** Disabled Commands
-
-#+begin_src emacs-lisp
-  ;; Enable useful commands that are disabled by default
-  (dolist (cmd '(list-timers narrow-to-region upcase-region downcase-region
-                           erase-buffer scroll-left dired-find-alternate-file))
-    (put cmd 'disabled nil))
-#+end_src
-
-* Language-Specific Settings
-
-** Python
-
-#+begin_src emacs-lisp
-  (use-package python
-    :straight nil
-    :custom
-    (python-indent-guess-indent-offset-verbose nil)) ; Less verbose indentation
-#+end_src
-
-** Shell Script
-
-#+begin_src emacs-lisp
-  (use-package sh-script
-    :straight nil
-    :custom
-    (sh-indent-after-continuation 'always))
-#+end_src
-
-* Final Configuration
-
-#+begin_src emacs-lisp
-  ;; You can add any personal configurations or overrides here
-  
-  ;; Provide the init feature
-  (provide 'init)
 #+end_src
