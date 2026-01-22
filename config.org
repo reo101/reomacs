@@ -1152,3 +1152,13 @@ function. If any files were created by this advice, it then calls
 #+begin_src emacs-lisp
   (use-package proof-general)
 #+end_src
+
+* Nameless
+
+#+begin_src emacs-lisp
+  (use-package nameless
+    :straight (:host github :repo "Malabarba/Nameless")
+    :hook (emacs-lisp-mode . nameless-mode)
+    :custom
+    (nameless-private-prefix t))
+#+end_src
