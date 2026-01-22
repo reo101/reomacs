@@ -119,7 +119,8 @@ Use to comment out blocks of code without disabling them with semicolons."
 ** Theme
 
 #+begin_src emacs-lisp
-  (load-theme 'modus-vivendi-tinted t)
+  (add-hook 'reomacs/post-init-hooks
+            (lambda () (load-theme 'modus-vivendi-tinted t)))
 #+end_src
 
 ** Scratch
