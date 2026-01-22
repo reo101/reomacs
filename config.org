@@ -778,6 +778,20 @@ Use to comment out blocks of code without disabling them with semicolons."
     (evil-define-key 'normal org-mode-map
       "gx" #'org-open-at-point))
 
+  ;; org-appear: reveal emphasis markers and links when cursor is on them (neovim-like conceal)
+  ;; NOTE: Emphasis inside link descriptions is a known org-mode parser limitation
+  (use-package org-appear
+    :straight (:host github :repo "awth13/org-appear")
+    :hook (org-mode . org-appear-mode)
+    :custom
+    (org-appear-autoemphasis t)
+    (org-appear-autolinks t)
+    (org-appear-autosubmarkers t)
+    (org-appear-autoentities t)
+    (org-appear-autokeywords t)
+    (org-appear-delay 0)
+    (org-appear-trigger 'always))
+
   (use-package org-superstar
     :straight (:host github :repo "integral-dw/org-superstar-mode")
     :config
