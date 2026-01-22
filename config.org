@@ -735,6 +735,8 @@ Use to comment out blocks of code without disabling them with semicolons."
     :custom
     ;; Hide emphasis markers (*bold*, /italic/, =verbatim=, ~code~)
     (org-hide-emphasis-markers t)
+    ;; Disable mouse-1 opening links (use gx instead)
+    (org-mouse-1-follows-link nil)
     :config
     (dolist (face '((org-level-1 . 1.35)
                     (org-level-2 . 1.3)
