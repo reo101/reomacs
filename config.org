@@ -79,6 +79,11 @@ Use to comment out blocks of code without disabling them with semicolons."
   (when (member "FiraCode Nerd Font" (font-family-list))
     (set-face-attribute 'default nil :font "FiraCode Nerd Font" :height 108)
     (set-face-attribute 'fixed-pitch nil :font "FiraCode Nerd Font"))
+  ;; FiraCode has no italic variant - use Iosevka Nerd Font for italics
+  (when (member "Iosevka Nerd Font" (font-family-list))
+    (set-face-attribute 'italic nil
+                        :family "Iosevka Nerd Font"
+                        :slant 'italic))
 
   ;; Indentation
   ;; Always use spaces instead of tabs
