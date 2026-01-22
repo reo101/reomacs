@@ -772,7 +772,11 @@ Use to comment out blocks of code without disabling them with semicolons."
     (add-hook 'org-mode-hook 'prettify-symbols-mode)
 
     (add-to-list 'org-structure-template-alist
-                 '("el" . "src emacs-lisp")))
+                 '("el" . "src emacs-lisp"))
+
+    ;; Use org-open-at-point for gx in org-mode (fixes link handling inside concealed links)
+    (evil-define-key 'normal org-mode-map
+      "gx" #'org-open-at-point))
 
   (use-package org-superstar
     :straight (:host github :repo "integral-dw/org-superstar-mode")
