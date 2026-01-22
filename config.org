@@ -1208,3 +1208,39 @@ function. If any files were created by this advice, it then calls
     :custom
     (nameless-private-prefix t))
 #+end_src
+
+* LLM (gptel)
+
+** gptel
+
+#+begin_src emacs-lisp
+  (use-package gptel
+    :straight t
+    :config
+    ;; Anthropic/Claude backend
+    (gptel-make-anthropic "Claude"
+      :stream t
+      :key 'gptel-api-key-from-auth-source)
+
+    ;; Set Claude as default
+    (setopt gptel-backend (gptel-make-anthropic "Claude"
+                            :stream t
+                            :key 'gptel-api-key-from-auth-source))
+    (setopt gptel-model 'claude-sonnet-4-20250514)
+
+    :bind
+    ("C-c g" . gptel)
+    ("C-c G" . gptel-send))
+#+end_src
+
+** gptel-agent
+
+#+begin_src emacs-lisp
+  (use-package gptel-agent
+    :straight (:host github :repo "karthink/gptel-agent")
+    :after gptel
+    :config
+    (gptel-agent-update)
+    :bind
+    ("C-c a" . gptel-agent))
+#+end_src
