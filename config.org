@@ -344,7 +344,7 @@ Use to comment out blocks of code without disabling them with semicolons."
     :config
     (meow-setup)
     (meow-global-mode 1))
-  
+
   ;;  Meow Tree Sitter
   (use-package meow-tree-sitter
     :straight (meow-tree-sitter
@@ -353,7 +353,7 @@ Use to comment out blocks of code without disabling them with semicolons."
                (:defaults "queries"))
     :config
     (meow-tree-sitter-register-defaults))
-  ;; (add-to-list 'meow-tree-sitter-major-mode-language-alist '("dart" . "dart")))  
+  ;; (add-to-list 'meow-tree-sitter-major-mode-language-alist '("dart" . "dart")))
 #+end_src
 
 ** Leader-key gaming
