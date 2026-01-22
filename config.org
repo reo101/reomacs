@@ -801,20 +801,20 @@ Use to comment out blocks of code without disabling them with semicolons."
     :hook (org-mode . org-include-inline-mode))
 
 
-  (defcustom reo101/dailies-file "~/Projects/Metacraft/dailies.org"
+  (defcustom reomacs/dailies-file "~/Projects/Metacraft/dailies.org"
     "Path to the dailies.org file for tracking daily work."
     :type 'file
     :group 'reo101)
 
   ;;;###autoload
-  (defun reo101/dailies-new-day ()
+  (defun reomacs/dailies-new-day ()
     "Create a new day entry in the dailies file.
 Finds the last date entry, creates a new heading for today (or next
 workday if already exists), copies previous 'Today' to 'Yesterday'
 (or appropriate weekday name), and creates empty 'Today' section."
     (interactive)
     (require 'calendar)
-    (-let* ((dailies-buf (find-file-noselect (expand-file-name reo101/dailies-file)))
+    (-let* ((dailies-buf (find-file-noselect (expand-file-name reomacs/dailies-file)))
             (today (calendar-current-date))
             (today-time (encode-time 0 0 0 (nth 1 today) (nth 0 today) (nth 2 today)))
             (last-date-pos nil)
@@ -848,10 +848,10 @@ workday if already exists), copies previous 'Today' to 'Yesterday'
                                         (string-to-number (nth 0 parts))))
                 (last-is-today-or-later (>= (float-time last-time) (float-time today-time)))
                 (new-time (if last-is-today-or-later
-                              (reo101/dailies--next-workday last-time)
+                              (reomacs/dailies--next-workday last-time)
                             today-time))
                 (new-date-str (format-time-string "<%Y-%m-%d %a>" new-time))
-                (yesterday-label (reo101/dailies--yesterday-label last-time new-time))
+                (yesterday-label (reomacs/dailies--yesterday-label last-time new-time))
                 ;; Find where to insert (end of last date subtree, not end of file)
                 (insert-pos (save-excursion
                               (goto-char last-date-pos)
@@ -870,7 +870,7 @@ workday if already exists), copies previous 'Today' to 'Yesterday'
           (switch-to-buffer dailies-buf)
           (message "Created new daily entry for %s" new-date-str)))))
 
-  (defun reo101/dailies--next-workday (from-date)
+  (defun reomacs/dailies--next-workday (from-date)
     "Return the next workday after FROM-DATE (a time value).
 Skips weekends. Could be extended for holidays."
     (-let* ((one-day (* 24 60 60))
@@ -882,7 +882,7 @@ Skips weekends. Could be extended for holidays."
         (setq dow (string-to-number (format-time-string "%u" next-time))))
       next-time))
 
-  (defun reo101/dailies--yesterday-label (last-time new-time)
+  (defun reomacs/dailies--yesterday-label (last-time new-time)
     "Determine the label for the 'yesterday' section.
 LAST-TIME and NEW-TIME are Emacs time values.
 Returns 'Yesterday', 'Friday', 'Last Week', or the weekday name."
@@ -898,7 +898,7 @@ Returns 'Yesterday', 'Friday', 'Last Week', or the weekday name."
        (t (format "Last %s" last-dow)))))
 
   ;;;###autoload
-  (defun reo101/org-heading-to-markdown-clipboard (&optional target-level md-level-offset)
+  (defun reomacs/org-heading-to-markdown-clipboard (&optional target-level md-level-offset)
     "Export children of ancestor heading to markdown in kill-ring.
   TARGET-LEVEL: which ancestor level to export from (default 2).
   MD-LEVEL-OFFSET: adjust output heading levels (default 0).
@@ -1050,7 +1050,7 @@ Returns 'Yesterday', 'Friday', 'Last Week', or the weekday name."
 ** WDired new files
 
 #+begin_src emacs-lisp
-(defun reo101/wdired-create-new-files-advice (orig-fun &rest args)
+(defun reomacs/wdired-create-new-files-advice (orig-fun &rest args)
   "Advise `wdired-finish-edit` to create new files and refresh.
 
 This function is designed to be used as `:around` advice. It scans the
@@ -1129,7 +1129,7 @@ function. If any files were created by this advice, it then calls
 
 ;; Add our function as "around" advice to `wdired-finish-edit`.
 ;; This means our function wraps the original one.
-(advice-add 'wdired-finish-edit :around #'reo101/wdired-create-new-files-advice)
+(advice-add 'wdired-finish-edit :around #'reomacs/wdired-create-new-files-advice)
 
 ;; To remove this advice later, you can run:
 ;; (advice-remove 'wdired-finish-edit #'my-wdired-create-new-files-advice)
