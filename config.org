@@ -732,6 +732,9 @@ Use to comment out blocks of code without disabling them with semicolons."
                    (format "(defun org-git-version () \"The truncate git commit hash of Org mode.\" %S)\n" git-version)
                    "(provide 'org-version)\n")))
                 :pin nil)
+    :custom
+    ;; Hide emphasis markers (*bold*, /italic/, =verbatim=, ~code~)
+    (org-hide-emphasis-markers t)
     :config
     (dolist (face '((org-level-1 . 1.35)
                     (org-level-2 . 1.3)
