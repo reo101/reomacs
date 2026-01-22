@@ -717,6 +717,42 @@ Use to comment out blocks of code without disabling them with semicolons."
     ("C-c p d" . project-find-dir))
 #+end_src
 
+* VCS
+
+** Magit
+
+#+begin_src emacs-lisp
+  (use-package magit
+    :straight t
+    :bind
+    ("C-c g" . magit-status)
+    ("C-c G" . magit-dispatch)
+    :custom
+    (magit-display-buffer-function #'magit-display-buffer-same-window-except-diff-v1)
+    (magit-diff-refine-hunk 'all)
+    (magit-save-repository-buffers 'dontask))
+
+  (use-package magit-delta
+    :straight t
+    :hook (magit-mode . magit-delta-mode))
+#+end_src
+
+** Jujutsu
+
+#+begin_src emacs-lisp
+  ;; vc-jj: integrates jj with built-in vc.el and project.el
+  (use-package vc-jj
+    :straight t
+    :config
+    (require 'project-jj))
+
+  ;; jj-mode: Magit-inspired interface for jujutsu
+  (use-package jj-mode
+    :straight (:host github :repo "bolivier/jj-mode.el")
+    :bind
+    ("C-c j" . jj-log))
+#+end_src
+
 * Documentts
 ** Org
 
