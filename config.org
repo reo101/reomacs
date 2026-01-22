@@ -31,6 +31,24 @@ Use to comment out blocks of code without disabling them with semicolons."
   (add-hook 'after-save-hook #'reomacs/tangle-config-org)
   (comment
    (reomacs/tangle-config-org))
+
+  (defvar reomacs/post-init-hooks nil
+    "Functions to run after init and after config reload.")
+
+  (defun reomacs/run-post-init-hooks ()
+    "Run all functions in `reomacs/post-init-hooks'."
+    (run-hooks 'reomacs/post-init-hooks))
+
+  (add-hook 'emacs-startup-hook #'reomacs/run-post-init-hooks)
+
+  (defun reomacs/reload-config ()
+    "Tangle config.org and reload config.el."
+    (interactive)
+    (let ((org-confirm-babel-evaluate nil))
+      (org-babel-tangle-file (expand-file-name "config.org" user-emacs-directory)))
+    (load-file (expand-file-name "config.el" user-emacs-directory))
+    (reomacs/run-post-init-hooks)
+    (message "Config tangled and reloaded."))
 #+end_src
 
 ** Defaults
