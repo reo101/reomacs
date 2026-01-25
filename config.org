@@ -1247,3 +1247,271 @@ function. If any files were created by this advice, it then calls
     :bind
     ("C-c a" . gptel-agent))
 #+end_src
+
+* Reomodeline
+
+Native heirline-inspired mode-line.
+
+** Dependencies
+
+#+begin_src emacs-lisp
+  (use-package nerd-icons :straight t)
+#+end_src
+
+** Core
+
+#+begin_src emacs-lisp
+  (defgroup reomodeline nil "Heirline-inspired mode-line." :group 'mode-line)
+
+  (defvar reomodeline-colors
+    '((red . "#ff5555") (green . "#50fa7b") (blue . "#6272a4") (orange . "#ffb86c")
+      (yellow . "#f1fa8c") (purple . "#bd93f9") (cyan . "#8be9fd")
+      (diag-error . "#ff5555") (diag-warn . "#ffb86c") (diag-info . "#8be9fd") (diag-hint . "#50fa7b")))
+
+  (defun reomodeline-color (name) (alist-get name reomodeline-colors))
+#+end_src
+
+** Vi Mode
+
+#+begin_src emacs-lisp
+  ;; Base state colors
+  (defvar reomodeline-evil-state-colors
+    '((normal . "#ff5555") (insert . "#50fa7b") (visual . "#8be9fd")
+      (replace . "#ffb86c") (operator . "#bd93f9") (motion . "#bd93f9")
+      (emacs . "#bd93f9")))
+
+  ;; Detailed state/substate -> name mapping (inspired by neovim heirline)
+  ;; Format: (state . name) or ((state . substate) . name)
+  (defvar reomodeline-evil-state-names
+    '(;; Normal state variants
+      (normal . "N")
+      ((normal . nil) . "N")
+      ;; Insert state variants
+      (insert . "I")
+      ((insert . completion) . "Ic")    ; completion active
+      ;; Visual state variants (evil-visual-selection: char, line, block, screen-line)
+      (visual . "V")
+      ((visual . char) . "V")
+      ((visual . line) . "V_")
+      ((visual . block) . "^V")
+      ((visual . screen-line) . "Vs")
+      ;; Replace state variants
+      (replace . "R")
+      ((replace . nil) . "R")
+      ;; Operator-pending state
+      (operator . "O")
+      ((operator . nil) . "O")
+      ((operator . char) . "Oc")
+      ((operator . line) . "Ol")
+      ((operator . block) . "Ob")
+      ;; Motion state
+      (motion . "M")
+      ;; Emacs state
+      (emacs . "E")))
+
+  (defun reomodeline--get-visual-subtype ()
+    "Get visual selection type: char, line, block, or screen-line."
+    (when (and (eq evil-state 'visual)
+               (bound-and-true-p evil-visual-selection))
+      evil-visual-selection))
+
+  (defun reomodeline--get-operator-subtype ()
+    "Get operator-pending motion type if available."
+    (when (eq evil-state 'operator)
+      (bound-and-true-p evil-this-type)))
+
+  (defun reomodeline--in-completion-p ()
+    "Check if completion is active in insert mode."
+    (and (eq evil-state 'insert)
+         (or (bound-and-true-p company-candidates)
+             (bound-and-true-p corfu--candidates)
+             (minibufferp))))
+
+  (defun reomodeline-vimode ()
+    (when (bound-and-true-p evil-mode)
+      (let* ((state evil-state)
+             (subtype (cond
+                       ((eq state 'visual) (reomodeline--get-visual-subtype))
+                       ((eq state 'operator) (reomodeline--get-operator-subtype))
+                       ((eq state 'insert) (when (reomodeline--in-completion-p) 'completion))
+                       (t nil)))
+             (key (if subtype (cons state subtype) state))
+             (name (or (alist-get key reomodeline-evil-state-names nil nil #'equal)
+                       (alist-get state reomodeline-evil-state-names "?")))
+             (color (alist-get state reomodeline-evil-state-colors "#bd93f9")))
+(let ((padded (pcase (length name)
+                           (1 (concat " " name " "))           ; centered: ` N `
+                           (2 (if (let ((c (aref name 0)))     ; check if 1st char is uppercase
+                                    (and (>= c ?A) (<= c ?Z)))
+                                  (concat " " name)            ; capital on left: ` V_`
+                                (concat name " ")))            ; capital on right: `^V `
+                           (_ name))))
+          (propertize padded
+                      'face `(:background ,color :foreground "black" :weight bold))))))
+#+end_src
+
+** Macro
+
+#+begin_src emacs-lisp
+  (defun reomodeline-macro ()
+    (when (or defining-kbd-macro executing-kbd-macro)
+      (propertize (format "  [%s]" (if (bound-and-true-p evil-this-macro)
+                                        (char-to-string evil-this-macro) "M"))
+                  'face `(:foreground ,(reomodeline-color 'orange) :weight bold))))
+#+end_src
+
+** File Block
+
+#+begin_src emacs-lisp
+  (defun reomodeline-file-icon ()
+    (when (and (display-graphic-p) (featurep 'nerd-icons))
+      (concat (if buffer-file-name (nerd-icons-icon-for-file buffer-file-name)
+                (nerd-icons-icon-for-mode major-mode)) " ")))
+
+  (defun reomodeline-filename ()
+    (propertize (if buffer-file-name (file-name-nondirectory buffer-file-name) (buffer-name))
+                'face (cond (buffer-read-only 'font-lock-constant-face)
+                            ((buffer-modified-p) `(:foreground ,(reomodeline-color 'orange) :weight bold))
+                            (t 'font-lock-keyword-face))))
+
+  (defun reomodeline-file-flags ()
+    (concat (when buffer-read-only (propertize "" 'face `(:foreground ,(reomodeline-color 'green))))
+            (when (buffer-modified-p) (propertize "[+]" 'face `(:foreground ,(reomodeline-color 'orange))))))
+
+  (defun reomodeline-file-block ()
+    (concat (or (reomodeline-file-icon) "") (reomodeline-filename) (reomodeline-file-flags)))
+#+end_src
+
+** VCS
+
+#+begin_src emacs-lisp
+  (defvar-local reomodeline--jj-info nil)
+
+  (defun reomodeline-update-jj (&rest _)
+    "Update jujutsu state asynchronously."
+    (when-let* ((dir (or (and buffer-file-name (file-name-directory buffer-file-name)) default-directory))
+                (root (locate-dominating-file dir ".jj")))
+      (let* ((default-directory root)
+             (buf (current-buffer))
+             (proc-buf (generate-new-buffer " *reomodeline-jj*")))
+        (make-process
+         :name "reomodeline-jj" :buffer proc-buf :noquery t
+         :command '("jj" "log" "-r" "@" "--no-graph" "-T" "change_id.short(8)")
+         :sentinel (lambda (proc _event)
+                     (when (eq (process-status proc) 'exit)
+                       (let ((output (with-current-buffer (process-buffer proc)
+                                       (string-trim (buffer-string)))))
+                         (kill-buffer (process-buffer proc))
+                         (when (and (= (process-exit-status proc) 0)
+                                    (buffer-live-p buf))
+                           (with-current-buffer buf
+                             (setq reomodeline--jj-info output)
+                             (force-mode-line-update))))))))))
+
+  (add-hook 'find-file-hook #'reomodeline-update-jj)
+  (add-hook 'after-save-hook #'reomodeline-update-jj)
+
+  (defun reomodeline--vcs-bubble (text)
+    (concat (propertize "" 'face '(:foreground "#FF8800"))
+            (propertize "" 'face '(:foreground "#FF8800" :background "#ffff66"))
+            (propertize (concat " " text " ") 'face '(:foreground "#000000" :background "#ffff66" :weight bold))
+            (propertize "" 'face '(:foreground "#ffff66"))))
+
+  (defun reomodeline-jj ()
+    (when reomodeline--jj-info (reomodeline--vcs-bubble reomodeline--jj-info)))
+
+  (defun reomodeline-git ()
+    (when (and vc-mode (not reomodeline--jj-info))
+      (reomodeline--vcs-bubble
+       (replace-regexp-in-string "^ \\(?:Git\\|JJ\\)[:-]" "" (substring-no-properties vc-mode)))))
+
+  (defun reomodeline-vcs () (or (reomodeline-jj) (reomodeline-git)))
+#+end_src
+
+** Diagnostics
+
+#+begin_src emacs-lisp
+  (defun reomodeline-diagnostics ()
+    (let ((e 0) (w 0) (i 0) (h 0))
+      (when (bound-and-true-p flymake-mode)
+        (dolist (d (flymake-diagnostics))
+          (pcase (flymake-diagnostic-type d)
+            (:error (cl-incf e)) (:warning (cl-incf w)) (:note (cl-incf h)) (_ (cl-incf i)))))
+      (when (bound-and-true-p flycheck-mode)
+        (let ((c (flycheck-count-errors flycheck-current-errors)))
+          (setq e (or (alist-get 'error c) 0) w (or (alist-get 'warning c) 0) i (or (alist-get 'info c) 0))))
+      (when (> (+ e w i h) 0)
+        (concat (propertize "![" 'face `(:foreground ,(reomodeline-color 'orange)))
+                (when (> e 0) (propertize (format " %d" e) 'face `(:foreground ,(reomodeline-color 'diag-error))))
+                (when (> w 0) (propertize (format " %d" w) 'face `(:foreground ,(reomodeline-color 'diag-warn))))
+                (when (> i 0) (propertize (format " %d" i) 'face `(:foreground ,(reomodeline-color 'diag-info))))
+                (when (> h 0) (propertize (format " %d" h) 'face `(:foreground ,(reomodeline-color 'diag-hint))))
+                (propertize "]" 'face `(:foreground ,(reomodeline-color 'orange)))))))
+#+end_src
+
+** LSP
+
+#+begin_src emacs-lisp
+  (defun reomodeline-lsp ()
+    (let (servers)
+      (when (bound-and-true-p eglot--managed-mode)
+        (when-let* ((s (eglot-current-server))) (push (eglot-project-nickname s) servers)))
+      (when (bound-and-true-p lsp-mode)
+        (dolist (ws (lsp-workspaces)) (push (lsp--workspace-server-id ws) servers)))
+      (when servers
+        (propertize (format " [%s]" (string-join (mapcar #'symbol-name servers) ", "))
+                    'face `(:foreground ,(reomodeline-color 'green) :weight bold)))))
+#+end_src
+
+** Filetype / Spell / Ruler / Scrollbar
+
+#+begin_src emacs-lisp
+  (defun reomodeline-filetype ()
+    (propertize (upcase (string-replace "-mode" "" (symbol-name major-mode))) 'face '(:weight bold)))
+
+  (defun reomodeline-spell ()
+    (when (bound-and-true-p flyspell-mode)
+      (propertize "SPELL " 'face `(:foreground ,(reomodeline-color 'orange) :weight bold))))
+
+  (defun reomodeline-ruler ()
+    (format "%4d/%d:%2d %s" (line-number-at-pos) (line-number-at-pos (point-max)) (current-column)
+            (cond ((= (window-start) (point-min)) "Top")
+                  ((= (window-end) (point-max)) "Bot")
+                  (t (format "%2d%%%%" (/ (* 100 (window-start)) (max 1 (point-max))))))))
+
+  (defvar reomodeline-scrollbar-chars '("█" "▇" "▆" "▅" "▄" "▃" "▂" "▁"))
+
+  (defun reomodeline-scrollbar ()
+    (let* ((line (line-number-at-pos)) (lines (max 1 (line-number-at-pos (point-max))))
+           (idx (min (1- (length reomodeline-scrollbar-chars))
+                     (floor (* (/ (float line) lines) (length reomodeline-scrollbar-chars)))))
+           (char (nth idx reomodeline-scrollbar-chars)))
+      (propertize (concat char char) 'face `(:foreground ,(reomodeline-color 'cyan)))))
+#+end_src
+
+** Statusline Assembly
+
+#+begin_src emacs-lisp
+  (defun reomodeline-left ()
+    (concat (or (reomodeline-vimode) "") (or (reomodeline-macro) "") " "
+            (reomodeline-file-block) " " (or (reomodeline-vcs) "") " " (or (reomodeline-diagnostics) "")))
+
+  (defun reomodeline-right ()
+    (concat (or (reomodeline-lsp) "") " " (reomodeline-filetype) " "
+            (or (reomodeline-spell) "") (reomodeline-ruler) " " (reomodeline-scrollbar)))
+
+  (setq-default mode-line-format
+                '("%e" (:eval (reomodeline-left)) mode-line-format-right-align (:eval (reomodeline-right))))
+#+end_src
+
+** Evil State Hooks
+
+#+begin_src emacs-lisp
+  (add-hook 'reomacs/post-init-hooks
+            (lambda ()
+              (when (bound-and-true-p evil-mode)
+                (dolist (hook '(evil-normal-state-entry-hook evil-insert-state-entry-hook
+                                evil-visual-state-entry-hook evil-replace-state-entry-hook
+                                evil-operator-state-entry-hook evil-emacs-state-entry-hook))
+                  (add-hook hook #'force-mode-line-update)))))
+#+end_src
