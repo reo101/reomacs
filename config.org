@@ -236,6 +236,28 @@ Skips display-touching initialization on reload to avoid PGTK crashes."
     (ultra-scroll-mode 1))
 #+end_src
 
+** Completion Preview
+
+#+begin_src emacs-lisp
+  (use-package completion-preview
+    :init
+    (add-hook 'prog-mode-hook #'completion-preview-mode)
+    (add-hook 'text-mode-hook #'completion-preview-mode)
+    :custom
+    (completion-preview-minimum-symbol-length 2)
+    :bind
+    (:map completion-preview-active-mode-map
+          ("C-n" . completion-preview-next-candidate)
+          ("C-p" . completion-preview-prev-candidate)
+          ("C-y" . completion-preview-insert)))
+
+  (use-package cape
+    :init
+    ;; Add completion-at-point handlers
+    (add-hook 'completion-at-point-functions #'cape-dabbrev)
+    (add-hook 'completion-at-point-functions #'cape-file))
+#+end_src
+
 * Libs
 
 - https://github.com/magnars/dash.el
