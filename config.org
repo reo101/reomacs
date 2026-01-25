@@ -72,6 +72,9 @@ Use to comment out blocks of code without disabling them with semicolons."
 
   (setq ring-bell-function 'ignore)
 
+  ;; Suppress native-comp warnings for known upstream issues
+  (setq native-comp-async-report-warnings-errors 'silent)
+
   (setopt x-select-enable-clipboard t)
   (fset 'yes-or-no-p 'y-or-n-p)
   (pixel-scroll-precision-mode)
@@ -454,7 +457,7 @@ Use to comment out blocks of code without disabling them with semicolons."
 
   (use-package vertico-posframe
     :straight (:host github :repo "tumashu/vertico-posframe")
-    :after vertico
+    :after (vertico vertico-multiform)
     :config
     (vertico-posframe-mode 1))
 
