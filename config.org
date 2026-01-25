@@ -106,7 +106,8 @@ Use to comment out blocks of code without disabling them with semicolons."
             (space-mark ?\  [?␣])          ; nbsp: ␣
             ; (newline-mark ?\n [?↴ ?\n])    ; eol
             ))
-  (global-whitespace-mode 1)
+  ;; Only enable whitespace-mode in prog-mode buffers
+  (add-hook 'prog-mode-hook #'whitespace-mode)
 #+end_src
 
 ** Package Manager (straight)
