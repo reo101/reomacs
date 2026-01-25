@@ -70,6 +70,8 @@ Use to comment out blocks of code without disabling them with semicolons."
   (setopt scroll-step 1)
   (setopt scroll-margin 1)
 
+  (setq ring-bell-function 'ignore)
+
   (setopt x-select-enable-clipboard t)
   (fset 'yes-or-no-p 'y-or-n-p)
   (pixel-scroll-precision-mode)
