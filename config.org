@@ -1000,7 +1000,25 @@ Skips display-touching initialization on reload to avoid PGTK crashes."
 
     ;; Use org-open-at-point for gx in org-mode (fixes link handling inside concealed links)
     (evil-define-key 'normal org-mode-map
-      "gx" #'org-open-at-point))
+      "gx" #'org-open-at-point)
+
+    ;; Fix source block fontification when jumping to middle of buffer
+    ;; Increase jit-lock chunk size to fontify larger regions at once
+    (add-hook 'org-mode-hook
+              (lambda ()
+                (setq-local jit-lock-chunk-size 50000)
+                (setq-local jit-lock-contextually t)
+                ;; Force refontification of visible region after jumps
+                (add-hook 'post-command-hook
+                          (lambda ()
+                            (when (memq this-command '(goto-line evil-goto-line evil-goto-first-line
+                                                       beginning-of-buffer end-of-buffer
+                                                       scroll-up-command scroll-down-command
+                                                       evil-scroll-page-up evil-scroll-page-down
+                                                       consult-goto-line consult-line consult-outline))
+                              (font-lock-flush (window-start) (window-end))
+                              (font-lock-ensure (window-start) (window-end))))
+                          nil t))))
 
   ;; org-appear: reveal emphasis markers and links when cursor is on them (neovim-like conceal)
   ;; NOTE: Emphasis inside link descriptions is a known org-mode parser limitation
@@ -1120,6 +1138,136 @@ Returns 'Yesterday', 'Friday', 'Last Week', or the weekday name."
        ((= last-dow-num new-dow-num) (format "Last %s" last-dow))  ; Same weekday (e.g., Thu->Tue after holiday)
        ((< diff-days 8) "Last Week")
        (t (format "Last %s" last-dow)))))
+
+  (defcustom reomacs/dailies-repo-aliases '()
+    "Alist mapping GitHub \"owner/repo\" to display names for dailies.
+Set as a file-local variable in dailies.org."
+    :type '(alist :key-type string :value-type string)
+    :group 'reo101
+    :safe #'listp)
+
+  (defun reomacs/dailies--repo-display-name (owner-repo repo-name)
+    "Get display name for OWNER-REPO, falling back to REPO-NAME."
+    (or (cdr (assoc owner-repo reomacs/dailies-repo-aliases))
+        repo-name))
+
+  (defun reomacs/dailies--date-on-day-p (iso-date target-date)
+    "Check if ISO-DATE (e.g. \"2026-01-23T20:49:24Z\") is on TARGET-DATE (\"2026-01-23\")."
+    (and iso-date
+         (not (string-prefix-p "0001-" iso-date))
+         (string-prefix-p target-date iso-date)))
+
+  (defun reomacs/dailies--gh-username ()
+    "Get the current GitHub username."
+    (string-trim (shell-command-to-string "gh api user --jq .login 2>/dev/null")))
+
+  (defun reomacs/dailies--fetch-gh-interactions (date)
+    "Fetch GitHub PR/issue interactions for DATE using gh CLI.
+DATE should be a string like \"2025-01-26\".
+Returns a list of org-formatted \"+ \" lines."
+    (-let* ((next-date (format-time-string
+                        "%Y-%m-%d"
+                        (time-add (date-to-time (concat date "T00:00:00"))
+                                  (* 24 60 60))))
+            (date-filter (format "--updated=%s..%s" date next-date))
+            (my-username (reomacs/dailies--gh-username))
+            (results '()))
+      ;; PRs I authored
+      (-when-let* ((output (shell-command-to-string
+                            (format "gh search prs --author=@me %s --json number,repository,url,createdAt,closedAt,state 2>/dev/null"
+                                    date-filter)))
+                   (parsed (ignore-errors (json-parse-string output :array-type 'list :object-type 'alist))))
+        (--each parsed
+          (-let* [((&alist 'url url 'number number 'createdAt created 'closedAt closed 'state state
+                           'repository (&alist 'name repo 'nameWithOwner owner-repo)) it)
+                  (display-name (reomacs/dailies--repo-display-name owner-repo repo))]
+            (cond
+             ((reomacs/dailies--date-on-day-p created date)
+              (push (format "+ Create [[%s][~%s~ PR %s]]" url display-name number) results))
+             ((reomacs/dailies--date-on-day-p closed date)
+              (-let* ((events-json (shell-command-to-string
+                                    (format "gh api /repos/%s/issues/%s/events --jq '[.[] | select(.event == \"closed\" or .event == \"merged\")] | last | {actor: .actor.login, event: .event}' 2>/dev/null"
+                                            owner-repo number)))
+                      (event (ignore-errors (json-parse-string events-json :object-type 'alist)))
+                      (actor (alist-get 'actor event))
+                      (event-type (alist-get 'event event))
+                      (action (if (string= event-type "merged") "Merge" "Close")))
+                (if (string= actor my-username)
+                    (push (format "+ %s [[%s][~%s~ PR %s]]" action url display-name number) results)
+                  (push (format "+ %s [[%s][~%s~ PR %s]] (by @%s)" action url display-name number actor) results))))))))
+      ;; PRs I reviewed - check actual review dates
+      (-when-let* ((output (shell-command-to-string
+                            (format "gh search prs --reviewed-by=@me %s --json number,repository,url 2>/dev/null"
+                                    date-filter)))
+                   (parsed (ignore-errors (json-parse-string output :array-type 'list :object-type 'alist))))
+        (--each parsed
+          (-let* [((&alist 'url url 'number number
+                           'repository (&alist 'name repo 'nameWithOwner owner-repo)) it)
+                  (display-name (reomacs/dailies--repo-display-name owner-repo repo))
+                  (reviews-json (shell-command-to-string
+                                 (format "gh api /repos/%s/pulls/%s/reviews --jq '[.[] | select(.user.login == \"%s\" and (.submitted_at | startswith(\"%s\")))] | length' 2>/dev/null"
+                                         owner-repo number my-username date)))
+                  (review-count (string-to-number (string-trim reviews-json)))]
+            (when (> review-count 0)
+              (push (format "+ Review [[%s][~%s~ PR %s]]" url display-name number) results)))))
+      ;; Issues I authored
+      (-when-let* ((output (shell-command-to-string
+                            (format "gh search issues --author=@me %s --json number,repository,url,createdAt 2>/dev/null"
+                                    date-filter)))
+                   (parsed (ignore-errors (json-parse-string output :array-type 'list :object-type 'alist))))
+        (--each parsed
+          (-let* [((&alist 'url url 'number number 'createdAt created
+                           'repository (&alist 'name repo 'nameWithOwner owner-repo)) it)
+                  (display-name (reomacs/dailies--repo-display-name owner-repo repo))]
+            (when (reomacs/dailies--date-on-day-p created date)
+              (push (format "+ Create [[%s][~%s~ Issue %s]]" url display-name number) results)))))
+      (nreverse (delete-dups results))))
+
+  (defun reomacs/dailies--previous-workday (from-time)
+    "Return the previous workday before FROM-TIME.
+Skips weekends going backwards."
+    (-let* ((one-day (* 24 60 60))
+            (prev-time (time-subtract from-time one-day))
+            (dow (string-to-number (format-time-string "%u" prev-time))))
+      (while (>= dow 6)
+        (setq prev-time (time-subtract prev-time one-day))
+        (setq dow (string-to-number (format-time-string "%u" prev-time))))
+      prev-time))
+
+  (defun reomacs/dailies--heading-date ()
+    "Find the date from the nearest ** heading above point.
+Returns a time value or nil."
+    (save-excursion
+      (when (re-search-backward "^\\*\\* <\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\)" nil t)
+        (-let [date-str (match-string 1)]
+          (date-to-time (concat date-str "T00:00:00"))))))
+
+  ;;;###autoload
+  (defun reomacs/dailies-insert-gh-interactions (days-back)
+    "Insert GitHub interactions for a date into the dailies buffer.
+DAYS-BACK of 0 uses the smart 'yesterday' (previous workday) based
+on the current ** heading date. Positive numbers go that many days
+into the past from today."
+    (interactive
+     (list (read-number "Days back (0 for smart yesterday): " 0)))
+    (-let* ((target-date
+             (cond
+              ((and days-back (= days-back 0))
+               (-if-let (heading-time (reomacs/dailies--heading-date))
+                   (format-time-string "%Y-%m-%d"
+                                       (reomacs/dailies--previous-workday heading-time))
+                 (user-error "No date heading found above point")))
+              (days-back
+               (format-time-string "%Y-%m-%d"
+                                   (time-subtract (current-time)
+                                                  (* days-back 24 60 60))))
+              (t (format-time-string "%Y-%m-%d"))))
+            (interactions (reomacs/dailies--fetch-gh-interactions target-date)))
+      (if interactions
+          (progn
+            (insert (string-join interactions "\n"))
+            (message "Inserted %d interactions for %s" (length interactions) target-date))
+        (message "No GitHub interactions found for %s" target-date))))
 
   ;;;###autoload
   (defun reomacs/org-heading-to-markdown-clipboard (&optional target-level md-level-offset)
