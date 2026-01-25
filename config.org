@@ -1323,6 +1323,108 @@ function. If any files were created by this advice, it then calls
     ("C-c a" . gptel-agent))
 #+end_src
 
+* LSP
+
+** Language-Agnostic
+
+#+begin_src emacs-lisp
+  (use-package eglot
+    :custom
+    ;; Load language-specific LSP configs from lsp/ directory
+    (eglot-server-programs
+     (->> (directory-files (expand-file-name "lsp" user-emacs-directory) nil "\\.el$")
+          (--map (expand-file-name it (expand-file-name "lsp" user-emacs-directory)))
+          (--map (ignore-errors
+                   (-> (with-temp-buffer
+                         (insert-file-contents it)
+                         (read (current-buffer)))
+                       eval)))
+          (--filter it)
+          (--map (let ((modes (cdr (assoc 'modes it)))
+                       (cmd (cdr (assoc 'server-name it))))
+                   (cons modes (if (stringp cmd) (list cmd) cmd))))))
+
+    ;; Global workspace config
+    (eglot-workspace-configuration
+     '(:python (:analysis (:autoSearchPaths t :useLibraryCodeForTypes t))
+       :rust-analyzer (:checkOnSave (:command "clippy"))
+       :pylsp (:configurationSources ["flake8"])))
+
+    :hook ((python-mode . eglot-ensure)
+           (rust-mode . eglot-ensure)
+           (go-mode . eglot-ensure)
+           (typescript-mode . eglot-ensure)
+           (tsx-mode . eglot-ensure)
+           (bash-mode . eglot-ensure)
+           (lua-mode . eglot-ensure)))
+#+end_src
+
+** Language-Specific
+
+*** Python
+
+LSP config:
+#+begin_src emacs-lisp :tangle lsp/python.el
+  '((server-name . "pylsp")
+    (modes . (python-mode))
+    (root-markers . ("pyproject.toml" "setup.py" "setup.cfg" "requirements.txt" "Pipfile")))
+#+end_src
+
+Mode setup:
+#+begin_src emacs-lisp :tangle no
+  ;; Python treesit already configured globally
+#+end_src
+
+*** Rust
+
+LSP config:
+#+begin_src emacs-lisp :tangle lsp/rust.el
+  '((server-name . "rust-analyzer")
+    (modes . (rust-mode))
+    (root-markers . ("Cargo.toml" "rust-project.json")))
+#+end_src
+
+Mode setup:
+#+begin_src emacs-lisp :tangle no
+  ;; Rust treesit already configured globally
+#+end_src
+
+*** Go
+
+LSP config:
+#+begin_src emacs-lisp :tangle lsp/go.el
+  '((server-name . "gopls")
+    (modes . (go-mode))
+    (root-markers . ("go.mod" "go.sum")))
+#+end_src
+
+*** TypeScript
+
+LSP config:
+#+begin_src emacs-lisp :tangle lsp/typescript.el
+  '((server-name . "typescript-language-server" "--stdio")
+    (modes . (typescript-mode tsx-mode))
+    (root-markers . ("package.json" "tsconfig.json")))
+#+end_src
+
+*** Bash
+
+LSP config:
+#+begin_src emacs-lisp :tangle lsp/bash.el
+  '((server-name . "bash-language-server" "start")
+    (modes . (bash-mode sh-mode))
+    (root-markers . ("package.json")))
+#+end_src
+
+*** Lua
+
+LSP config:
+#+begin_src emacs-lisp :tangle lsp/lua.el
+  '((server-name . "lua-language-server")
+    (modes . (lua-mode))
+    (root-markers . ("lua" ".lua-format")))
+#+end_src
+
 * Reomodeline
 
 Native heirline-inspired mode-line.
