@@ -451,7 +451,9 @@ Use to comment out blocks of code without disabling them with semicolons."
     :straight (:host github :repo "achyudh/evil-keypad")
     :after evil
     :config
-    (evil-keypad-global-mode 1))
+    (evil-keypad-global-mode 1)
+    ;; SPC w -> C-c w, so bind C-c w to evil-window-map
+    (define-key mode-specific-map (kbd "w") evil-window-map))
 #+end_src
 
 ** Which-key
