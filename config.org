@@ -243,75 +243,23 @@ Skips display-touching initialization on reload to avoid PGTK crashes."
     (ultra-scroll-mode 1))
 #+end_src
 
-** Completion Preview
+** Extra Completion Sources (Cape)
 
-#+begin_src emacs-lisp :tangle no
-  (defun reomacs/completion-preview--at-symbol-p ()
-    "Return t if point is at or after a symbol of sufficient length."
-    (let ((bounds (bounds-of-thing-at-point 'symbol)))
-      (and bounds
-           (>= (- (point) (car bounds))
-               (or completion-preview-minimum-symbol-length 1)))))
-
-  (defun reomacs/completion-preview-next-or-trigger (&optional n)
-    "Trigger completion preview if not active, otherwise cycle to next candidate.
-If no preview is possible, fall back to `next-line'."
-    (interactive "p")
-    (cond
-     ;; Preview already showing - cycle
-     (completion-preview--overlay
-      (completion-preview-next-candidate n))
-     ;; At a symbol, try to trigger preview
-     ((reomacs/completion-preview--at-symbol-p)
-      (completion-preview--update)
-      (if completion-preview--overlay
-          (completion-preview-next-candidate n)
-        (message "No completions available")
-        (next-line n)))
-     ;; Not at symbol - fall back to next-line
-     (t (next-line n))))
-
-  (defun reomacs/completion-preview-prev-or-trigger (&optional n)
-    "Trigger completion preview if not active, otherwise cycle to previous candidate.
-If no preview is possible, fall back to `previous-line'."
-    (interactive "p")
-    (cond
-     ;; Preview already showing - cycle
-     (completion-preview--overlay
-      (completion-preview-prev-candidate n))
-     ;; At a symbol, try to trigger preview
-     ((reomacs/completion-preview--at-symbol-p)
-      (completion-preview--update)
-      (if completion-preview--overlay
-          (completion-preview-prev-candidate n)
-        (message "No completions available")
-        (previous-line n)))
-     ;; Not at symbol - fall back to previous-line
-     (t (previous-line n))))
-
-  (use-package completion-preview
-    :init
-    (add-hook 'prog-mode-hook #'completion-preview-mode)
-    (add-hook 'text-mode-hook #'completion-preview-mode)
-    :custom
-    (completion-preview-minimum-symbol-length 2)
-    :config
-    ;; Register our commands so they don't dismiss the preview
-    (add-to-list 'completion-preview--internal-commands
-                 'reomacs/completion-preview-next-or-trigger)
-    (add-to-list 'completion-preview--internal-commands
-                 'reomacs/completion-preview-prev-or-trigger)
-    :bind
-    (("C-n" . reomacs/completion-preview-next-or-trigger)
-     ("C-p" . reomacs/completion-preview-prev-or-trigger))
-    (:map completion-preview-active-mode-map
-          ("C-y" . completion-preview-insert)))
-
+#+begin_src emacs-lisp
   (use-package cape
-    :init
-    ;; Add completion-at-point handlers
-    (add-hook 'completion-at-point-functions #'cape-dabbrev)
-    (add-hook 'completion-at-point-functions #'cape-file))
+    :config
+    ;; Create a combined capf that merges dabbrev with other backends
+    (defun reomacs/cape-capf-setup ()
+      "Setup cape completion-at-point functions."
+      (setq-local completion-at-point-functions
+                  (list (cape-capf-super
+                         #'cape-dabbrev
+                         (car completion-at-point-functions))
+                        #'cape-file)))
+
+    ;; Apply to prog and text modes
+    (add-hook 'prog-mode-hook #'reomacs/cape-capf-setup)
+    (add-hook 'text-mode-hook #'reomacs/cape-capf-setup))
 #+end_src
 
 * Libs
@@ -584,7 +532,7 @@ If no preview is possible, fall back to `previous-line'."
   ;;  :hook emacs-lisp-mode)
 #+end_src
 
-* Completion
+* Completions
 
 ** Minibuffer
 
@@ -644,40 +592,109 @@ If no preview is possible, fall back to `previous-line'."
     (require 'nova-vertico)
     (nova-vertico-mode 1)
 
-    ;; Corfu
-    (require 'nova-corfu)
-    (require 'nova-corfu-popupinfo)
-    (nova-corfu-mode 1)
-    (nova-corfu-popupinfo-mode 1)
-
     ;; Eldoc
     (require 'nova-eldoc)
     (nova-eldoc-mode 1))
 #+end_src
 
-** Completion Popup
+** In-buffer
+
+*** Autocompletions
+
+**** Corfu
 
 #+begin_src emacs-lisp
+  ;; Toggle for global auto-completion visibility
+  (defvar reomacs/corfu-auto-enabled t
+    "Whether Corfu auto-completion popup is enabled globally.")
+
+  (defun reomacs/corfu-toggle-auto ()
+    "Toggle Corfu auto-completion on/off globally."
+    (interactive)
+    (setq reomacs/corfu-auto-enabled (not reomacs/corfu-auto-enabled))
+    (setq corfu-auto reomacs/corfu-auto-enabled)
+    (message "Corfu auto-completion %s" (if reomacs/corfu-auto-enabled "enabled" "disabled")))
+
   (use-package corfu
     :custom
-    (corfu-auto t)                   ;; Enable auto popup
-    (corfu-auto-delay 0.1)           ;; Delay before popup appears
-    (corfu-auto-prefix 2)            ;; Minimum prefix length for auto popup
-    ;; (corfu-cycle t)                ;; Enable cycling for `corfu-next/previous'
-    ;; (corfu-quit-at-boundary nil)   ;; Never quit at completion boundary
-    ;; (corfu-quit-no-match nil)      ;; Never quit, even if there is no match
-    ;; (corfu-preview-current nil)    ;; Disable current candidate preview
-    ;; (corfu-preselect 'prompt)      ;; Preselect the prompt
-    ;; (corfu-on-exact-match nil)     ;; Configure handling of exact matches
+    ;; Auto-completion (toggleable via reomacs/corfu-toggle-auto)
+    (corfu-auto t)
+    (corfu-auto-delay 0)
+    (corfu-auto-prefix 1)
+
+    ;; Neovim-like behavior: NO preview insertion, just visual ghost text
+    (corfu-preview-current nil)      ; Disable preview (prevents any insertion)
+    (corfu-preselect 'prompt)        ; Don't preselect any candidate initially
+    (corfu-on-exact-match nil)       ; Don't auto-insert on exact match
+
+    ;; Cycling through candidates
+    (corfu-cycle t)
+
+    ;; Popup behavior
+    (corfu-count 10)
+    (corfu-scroll-margin 2)
+    (corfu-quit-no-match 'separator)
 
     :init
     (global-corfu-mode)
 
-    ;; Enable optional extension modes:
-    ;; (corfu-history-mode)
-    ;; (corfu-popupinfo-mode)
-    )
+    :config
+    ;; C-n: Move to next candidate (or trigger popup if hidden)
+    (defun reomacs/corfu-next-or-complete ()
+      "Move to next Corfu candidate, triggering completion if not active."
+      (interactive)
+      (if completion-in-region-mode
+          (corfu-next 1)
+        ;; Not in completion - trigger it
+        (when (thing-at-point 'symbol)
+          (completion-at-point))))
 
+    ;; C-p: Move to previous candidate (or trigger popup if hidden)
+    (defun reomacs/corfu-previous-or-complete ()
+      "Move to previous Corfu candidate, triggering completion if not active."
+      (interactive)
+      (if completion-in-region-mode
+          (corfu-previous 1)
+        ;; Not in completion - trigger it and go to last
+        (when (thing-at-point 'symbol)
+          (completion-at-point)
+          (when completion-in-region-mode
+            (corfu-last)))))
+
+    ;; Keybindings in corfu-map (when popup is active)
+    (define-key corfu-map (kbd "C-n") #'corfu-next)
+    (define-key corfu-map (kbd "C-p") #'corfu-previous)
+    (define-key corfu-map (kbd "C-y") #'corfu-insert)
+    (define-key corfu-map (kbd "RET") nil)  ; Don't bind RET to avoid accidental insertion
+    (define-key corfu-map (kbd "TAB") nil)  ; Don't bind TAB
+    (define-key corfu-map (kbd "C-g") #'corfu-quit)
+    (define-key corfu-map (kbd "C-e") #'corfu-quit)
+
+    ;; Global keybindings to trigger completion in insert state
+    (with-eval-after-load 'evil
+      (define-key evil-insert-state-map (kbd "C-n") #'reomacs/corfu-next-or-complete)
+      (define-key evil-insert-state-map (kbd "C-p") #'reomacs/corfu-previous-or-complete)
+      (define-key evil-insert-state-map (kbd "C-y") #'corfu-insert)
+      ;; Toggle auto-completion
+      (define-key evil-insert-state-map (kbd "C-x C-a") #'reomacs/corfu-toggle-auto)
+      (define-key evil-normal-state-map (kbd "C-x C-a") #'reomacs/corfu-toggle-auto)))
+
+  ;; Optional: corfu-popupinfo for documentation popup
+  (use-package corfu-popupinfo
+    :straight nil  ; Built into corfu
+    :after corfu
+    :hook (corfu-mode . corfu-popupinfo-mode)
+    :custom
+    (corfu-popupinfo-delay '(0.5 . 0.2)))
+
+  ;; Optional: corfu-history for sorting by usage
+  (use-package corfu-history
+    :straight nil  ; Built into corfu
+    :after corfu
+    :hook (corfu-mode . corfu-history-mode)
+    :config
+    (with-eval-after-load 'savehist
+      (add-to-list 'savehist-additional-variables 'corfu-history)))
 #+end_src
 
 ** Fuzzy Completion Style
