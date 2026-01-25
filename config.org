@@ -197,6 +197,13 @@ Skips display-touching initialization on reload to avoid PGTK crashes."
                 (load-theme 'modus-vivendi-tinted t))))
 #+end_src
 
+** Rainbow Delimiters
+
+#+begin_src emacs-lisp
+  (use-package rainbow-delimiters
+    :hook (prog-mode . rainbow-delimiters-mode))
+#+end_src
+
 ** Scratch
 
 #+begin_src emacs-lisp
