@@ -85,14 +85,21 @@ Use to comment out blocks of code without disabling them with semicolons."
 
   (add-hook 'emacs-startup-hook #'reomacs/run-post-init-hooks)
 
+  (defvar reomacs/config-loaded-p nil
+    "Non-nil after initial config load. Used to skip re-initialization.")
+
   (defun reomacs/reload-config ()
-    "Tangle config.org and reload config.el."
+    "Tangle config.org and reload config.el.
+Skips display-touching initialization on reload to avoid PGTK crashes."
     (interactive)
-    (let ((org-confirm-babel-evaluate nil))
-      (org-babel-tangle-file (expand-file-name "config.org" user-emacs-directory)))
-    (load-file (expand-file-name "config.el" user-emacs-directory))
-    (reomacs/run-post-init-hooks)
-    (message "Config tangled and reloaded."))
+    (let ((org-confirm-babel-evaluate nil)
+          (reomacs/config-loaded-p t))  ; Signal we're reloading
+      (org-babel-tangle-file (expand-file-name "config.org" user-emacs-directory))
+      (load-file (expand-file-name "config.el" user-emacs-directory))
+      (reomacs/run-post-init-hooks)
+      (message "Config tangled and reloaded.")))
+
+  (add-hook 'emacs-startup-hook (lambda () (setq reomacs/config-loaded-p t)) 100)
 #+end_src
 
 ** Defaults
@@ -185,7 +192,9 @@ Use to comment out blocks of code without disabling them with semicolons."
 
 #+begin_src emacs-lisp
   (add-hook 'reomacs/post-init-hooks
-            (lambda () (load-theme 'modus-vivendi-tinted t)))
+            (lambda ()
+              (unless reomacs/config-loaded-p
+                (load-theme 'modus-vivendi-tinted t))))
 #+end_src
 
 ** Scratch
