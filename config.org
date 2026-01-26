@@ -1869,8 +1869,35 @@ function. If any files were created by this advice, it then calls
 ** Language-Agnostic
 
 #+begin_src emacs-lisp
+  (defun reomacs/lspmux-available-p (port)
+    "Check if lspmux is running on localhost:PORT."
+    (condition-case nil
+        (let ((proc (make-network-process
+                     :name "lspmux-check"
+                     :host "127.0.0.1"
+                     :service port
+                     :nowait nil)))
+          (delete-process proc)
+          t)
+      (error nil)))
+
+  (defun reomacs/rust-analyzer-command ()
+    "Return rust-analyzer command, preferring lspmux on port 27631 if available."
+    (if (reomacs/lspmux-available-p 27631)
+        '("nc" "127.0.0.1" "27631"
+          :initializationOptions (:lspMux (:version "1"
+                                           :method "connect"
+                                           :server "rust-analyzer")))
+      '("rust-analyzer")))
+
   (use-package eglot
+    :straight (:type built-in)
     :custom
+    ;; Enable events buffer for debugging (view with M-x eglot-events-buffer)
+    (eglot-events-buffer-size 100000)
+    ;; Show LSP progress notifications (like fidget.nvim)
+    (eglot-report-progress t)
+
     ;; Load language-specific LSP configs from lsp/ directory
     (eglot-server-programs
      (->> (directory-files (expand-file-name "lsp" user-emacs-directory) nil "\\.el$")
@@ -1885,19 +1912,30 @@ function. If any files were created by this advice, it then calls
                        (cmd (cdr (assoc 'server-name it))))
                    (cons modes (if (stringp cmd) (list cmd) cmd))))))
 
-    ;; Global workspace config
+    ;; Global workspace config (mirroring nvim rustaceanvim settings)
     (eglot-workspace-configuration
      '(:python (:analysis (:autoSearchPaths t :useLibraryCodeForTypes t))
-       :rust-analyzer (:checkOnSave (:command "clippy"))
+       :rust-analyzer (:procMacro (:enable t)
+                       :checkOnSave t
+                       :files (:excludeDirs [".direnv"])
+                       :assist (:importGranularity "module"
+                                :importPrefix "self")
+                       :cargo (:loadOutDirsFromCheck t
+                               :features "all"))
        :pylsp (:configurationSources ["flake8"])))
 
-    :hook ((python-mode . eglot-ensure)
-           (rust-mode . eglot-ensure)
-           (go-mode . eglot-ensure)
-           (typescript-mode . eglot-ensure)
-           (tsx-mode . eglot-ensure)
-           (bash-mode . eglot-ensure)
-           (lua-mode . eglot-ensure)))
+    :config
+    ;; Set rust-analyzer command dynamically (with lspmux support)
+    (add-to-list 'eglot-server-programs
+                 `(rust-ts-mode . ,(reomacs/rust-analyzer-command)))
+
+    :hook ((python-ts-mode . eglot-ensure)
+           (rust-ts-mode . eglot-ensure)
+           (go-ts-mode . eglot-ensure)
+           (typescript-ts-mode . eglot-ensure)
+           (tsx-ts-mode . eglot-ensure)
+           (bash-ts-mode . eglot-ensure)
+           (lua-ts-mode . eglot-ensure)))
 #+end_src
 
 ** Language-Specific
@@ -1918,16 +1956,10 @@ Mode setup:
 
 *** Rust
 
-LSP config:
-#+begin_src emacs-lisp :tangle lsp/rust.el
-  '((server-name . "rust-analyzer")
-    (modes . (rust-mode))
-    (root-markers . ("Cargo.toml" "rust-project.json")))
-#+end_src
-
-Mode setup:
-#+begin_src emacs-lisp :tangle no
-  ;; Rust treesit already configured globally
+#+begin_src emacs-lisp
+  (use-package rust-mode
+    :straight t
+    :defer t)
 #+end_src
 
 *** Go
