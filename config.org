@@ -2007,6 +2007,18 @@ LSP config:
     (root-markers . ("lua" ".lua-format")))
 #+end_src
 
+* Misc
+
+** Anki
+
+*** TODO research `:vc`
+
+#+begin_src emacs-lisp
+  (use-package anki-editor
+    ;; :vc (:url "https://github.com/anki-editor/anki-editor" :rev :newest)
+    :straight (:host github :repo "anki-editor/anki-editor"))
+#+end_src
+
 * Reomodeline
 
 Native heirline-inspired mode-line.
