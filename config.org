@@ -908,6 +908,15 @@ Skips display-touching initialization on reload to avoid PGTK crashes."
     ("C-c p d" . project-find-dir))
 #+end_src
 
+** Direnv
+
+#+begin_src emacs-lisp
+  (use-package envrc
+    :straight t
+    :config
+    (envrc-global-mode))
+#+end_src
+
 * VCS
 
 ** Magit
