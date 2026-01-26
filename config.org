@@ -201,7 +201,14 @@ Skips display-touching initialization on reload to avoid PGTK crashes."
 
 #+begin_src emacs-lisp
   (use-package rainbow-delimiters
-    :hook (prog-mode . rainbow-delimiters-mode))
+    :hook (prog-mode . rainbow-delimiters-mode)
+    :custom-face
+    (rainbow-delimiters-depth-1-face ((t (:foreground "#f7768e"))))
+    (rainbow-delimiters-depth-2-face ((t (:foreground "#e0af68"))))
+    (rainbow-delimiters-depth-3-face ((t (:foreground "#7aa2f7"))))
+    (rainbow-delimiters-depth-4-face ((t (:foreground "#ff9e64"))))
+    (rainbow-delimiters-depth-5-face ((t (:foreground "#9d7cd8"))))
+    (rainbow-delimiters-depth-6-face ((t (:foreground "#7dcfff")))))
 #+end_src
 
 ** Scratch
