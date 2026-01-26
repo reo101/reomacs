@@ -118,8 +118,9 @@ Skips display-touching initialization on reload to avoid PGTK crashes."
   ;; Run for any new frames created (e.g. from emacsclient -c)
   (add-hook 'after-make-frame-functions #'reomacs/setup-frame-ui)
 
-  (setopt scroll-step 1)
-  (setopt scroll-margin 1)
+  ;; Scrolling handled by ultra-scroll, don't set conflicting values
+  ;; (setopt scroll-step 1)
+  ;; (setopt scroll-margin 1)
 
   (setq ring-bell-function 'ignore)
 
@@ -128,8 +129,8 @@ Skips display-touching initialization on reload to avoid PGTK crashes."
 
   (setopt x-select-enable-clipboard t)
   (fset 'yes-or-no-p 'y-or-n-p)
-  (pixel-scroll-precision-mode)
-  ;; (pixel-scroll-precision-use-momentum)
+  ;; Note: ultra-scroll controls pixel-scroll-precision internally
+  (setopt pixel-scroll-precision-use-momentum t)
 
   ;; Fonts
   (when (member "FiraCode Nerd Font" (font-family-list))
@@ -244,7 +245,7 @@ Skips display-touching initialization on reload to avoid PGTK crashes."
   (use-package ultra-scroll
     :straight (:host github :repo "jdtsmith/ultra-scroll")
     :init
-    (setq scroll-conservatively 101 ; important!
+    (setq scroll-conservatively 0 ; Let ultra-scroll handle it
           scroll-margin 0)
     :config
     (ultra-scroll-mode 1))
@@ -305,8 +306,8 @@ Skips display-touching initialization on reload to avoid PGTK crashes."
                                 (ts-mode (intern (format "%s-ts-mode" (-first-item modes)))))
                            (--map (cons (intern (format "%s-mode" it)) ts-mode) modes)))))
 
-    ;; Maximize font-lock decoration
-    (setq treesit-font-lock-level 4))
+    ;; Treesit font-lock level (3=balanced, 4=maximum - level 4 can be slow)
+    (setq treesit-font-lock-level 3))
 #+end_src
 
 * Global stuff
