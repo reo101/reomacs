@@ -1223,6 +1223,168 @@ Returns a list of org-formatted \"+ \" lines."
               (push (format "+ Create [[%s][~%s~ Issue %s]]" url display-name number) results)))))
       (nreverse (delete-dups results))))
 
+  (defun reomacs/dailies--gh-async (command callback)
+    "Run gh COMMAND asynchronously, call CALLBACK with output string.
+COMMAND can be a string (split by shell rules) or a list of args.
+Sets TERM=dumb and sends EOF to prevent gh from blocking on terminal."
+    (-let* ((process-environment (cons "TERM=dumb" process-environment))
+            (buf (generate-new-buffer " *gh-async*"))
+            (cmd-list (if (listp command) command
+                        (split-string-shell-command command)))
+            (proc (make-process
+                   :name "gh-async"
+                   :buffer buf
+                   :connection-type 'pipe
+                   :command cmd-list
+                   :sentinel
+                   (lambda (proc event)
+                     (cond
+                      ((string-match-p "finished" event)
+                       (unwind-protect
+                           (funcall callback (with-current-buffer (process-buffer proc)
+                                               (buffer-string)))
+                         (kill-buffer (process-buffer proc))))
+                      ((string-match-p "\\(exited\\|failed\\)" event)
+                       (ignore-errors (kill-buffer (process-buffer proc)))))))))
+      (process-send-eof proc)
+      proc))
+
+  (defun reomacs/dailies--fetch-gh-interactions-async (date marker)
+    "Fetch GitHub interactions for DATE asynchronously.
+MARKER points to placeholder line; results insert above it."
+    (-let* ((next-date (format-time-string
+                        "%Y-%m-%d"
+                        (time-add (date-to-time (concat date "T00:00:00"))
+                                  (* 24 60 60))))
+            (date-filter (format "--updated=%s..%s" date next-date))
+            (repo-aliases reomacs/dailies-repo-aliases)
+            (state (make-hash-table :test 'eq)))
+      (puthash :pending 0 state)
+      (puthash :username nil state)
+      (puthash :date date state)
+      (puthash :marker marker state)
+      (puthash :repo-aliases repo-aliases state)
+      ;; First get username, then spawn parallel searches
+      (reomacs/dailies--gh-async
+       "gh api user --jq .login"
+       (lambda (output)
+         (puthash :username (string-trim output) state)
+         (reomacs/dailies--fetch-searches state date-filter)))))
+
+  (defun reomacs/dailies--fetch-searches (state date-filter)
+    "Spawn the 3 parallel search calls, updating STATE."
+    (-let ((date (gethash :date state)))
+      ;; Track 3 pending searches
+      (puthash :pending 3 state)
+      ;; Authored PRs
+      (reomacs/dailies--gh-async
+       (format "gh search prs --author=@me %s --json number,repository,url,createdAt,closedAt,state" date-filter)
+       (lambda (output)
+         (-when-let (parsed (ignore-errors (json-parse-string output :array-type 'list :object-type 'alist)))
+           (reomacs/dailies--process-authored-prs state parsed))
+         (reomacs/dailies--maybe-finish state)))
+      ;; Reviewed PRs
+      (reomacs/dailies--gh-async
+       (format "gh search prs --reviewed-by=@me %s --json number,repository,url" date-filter)
+       (lambda (output)
+         (-when-let (parsed (ignore-errors (json-parse-string output :array-type 'list :object-type 'alist)))
+           (reomacs/dailies--process-reviewed-prs state parsed))
+         (reomacs/dailies--maybe-finish state)))
+      ;; Authored issues
+      (reomacs/dailies--gh-async
+       (format "gh search issues --author=@me %s --json number,repository,url,createdAt" date-filter)
+       (lambda (output)
+         (-when-let (parsed (ignore-errors (json-parse-string output :array-type 'list :object-type 'alist)))
+           (reomacs/dailies--process-authored-issues state parsed))
+         (reomacs/dailies--maybe-finish state)))))
+
+  (defun reomacs/dailies--insert-result (state line)
+    "Insert LINE at marker position in STATE, above the placeholder."
+    (-when-let (marker (gethash :marker state))
+      (when (marker-buffer marker)
+        (with-current-buffer (marker-buffer marker)
+          (save-excursion
+            (goto-char marker)
+            (insert-before-markers line "\n"))))))
+
+  (defun reomacs/dailies--process-authored-prs (state prs)
+    "Process authored PRs, spawning detail fetches for closed ones."
+    (-let ((date (gethash :date state))
+           (repo-aliases (gethash :repo-aliases state))
+           (username (gethash :username state)))
+      (--each prs
+        (-let* [((&alist 'url url 'number number 'createdAt created 'closedAt closed
+                         'repository (&alist 'name repo 'nameWithOwner owner-repo)) it)
+                (display-name (reomacs/dailies--repo-display-name owner-repo repo))]
+          (cond
+           ((reomacs/dailies--date-on-day-p created date)
+            (reomacs/dailies--insert-result
+             state (format "+ Create [[%s][~%s~ PR %s]]" url display-name number)))
+           ((reomacs/dailies--date-on-day-p closed date)
+            ;; Need to fetch event details - increment pending
+            (puthash :pending (1+ (gethash :pending state)) state)
+            (reomacs/dailies--gh-async
+             (list "gh" "api" (format "/repos/%s/issues/%s/events" owner-repo number)
+                   "--jq" "[.[] | select(.event == \"closed\" or .event == \"merged\")] | last | {actor: .actor.login, event: .event}")
+             (lambda (output)
+               (-let* [(event (ignore-errors (json-parse-string (string-trim output) :object-type 'alist)))
+                       (actor (alist-get 'actor event))
+                       (event-type (alist-get 'event event))
+                       (action (if (string= event-type "merged") "Merge" "Close"))
+                       (line (if (string= actor username)
+                                 (format "+ %s [[%s][~%s~ PR %s]]" action url display-name number)
+                               (format "+ %s [[%s][~%s~ PR %s]] (by @%s)" action url display-name number actor)))]
+                 (reomacs/dailies--insert-result state line))
+               (reomacs/dailies--maybe-finish state)))))))))
+
+  (defun reomacs/dailies--process-reviewed-prs (state prs)
+    "Process reviewed PRs, spawning detail fetches to verify review date."
+    (-let ((date (gethash :date state))
+           (repo-aliases (gethash :repo-aliases state))
+           (username (gethash :username state)))
+      (--each prs
+        (-let* [((&alist 'url url 'number number
+                         'repository (&alist 'name repo 'nameWithOwner owner-repo)) it)
+                (display-name (reomacs/dailies--repo-display-name owner-repo repo))]
+          ;; Fetch review details to confirm review was on this date
+          (puthash :pending (1+ (gethash :pending state)) state)
+          (reomacs/dailies--gh-async
+           (list "gh" "api" (format "/repos/%s/pulls/%s/reviews" owner-repo number)
+                 "--jq" (format "[.[] | select(.user.login == \"%s\" and (.submitted_at | startswith(\"%s\")))] | length"
+                                username date))
+           (lambda (output)
+             (-let [count (string-to-number (string-trim output))]
+               (when (> count 0)
+                 (reomacs/dailies--insert-result
+                  state (format "+ Review [[%s][~%s~ PR %s]]" url display-name number))))
+             (reomacs/dailies--maybe-finish state)))))))
+
+  (defun reomacs/dailies--process-authored-issues (state issues)
+    "Process authored issues, adding created ones to results."
+    (-let ((date (gethash :date state))
+           (repo-aliases (gethash :repo-aliases state)))
+      (--each issues
+        (-let* [((&alist 'url url 'number number 'createdAt created
+                         'repository (&alist 'name repo 'nameWithOwner owner-repo)) it)
+                (display-name (reomacs/dailies--repo-display-name owner-repo repo))]
+          (when (reomacs/dailies--date-on-day-p created date)
+            (reomacs/dailies--insert-result
+             state (format "+ Create [[%s][~%s~ Issue %s]]" url display-name number)))))))
+
+  (defun reomacs/dailies--maybe-finish (state)
+    "Decrement pending count in STATE, remove placeholder when done."
+    (puthash :pending (1- (gethash :pending state)) state)
+    (when (<= (gethash :pending state) 0)
+      (-when-let (marker (gethash :marker state))
+        (when (marker-buffer marker)
+          (with-current-buffer (marker-buffer marker)
+            (save-excursion
+              (goto-char marker)
+              (when (looking-at (regexp-quote (concat "+ " reomacs/dailies--gh-placeholder)))
+                (delete-region (point) (line-beginning-position 2))))))
+        (message "GitHub interactions fetch complete")
+        (set-marker marker nil))))
+
   (defun reomacs/dailies--previous-workday (from-time)
     "Return the previous workday before FROM-TIME.
 Skips weekends going backwards."
@@ -1241,6 +1403,9 @@ Returns a time value or nil."
       (when (re-search-backward "^\\*\\* <\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\)" nil t)
         (-let [date-str (match-string 1)]
           (date-to-time (concat date-str "T00:00:00"))))))
+
+  (defconst reomacs/dailies--gh-placeholder "⏳ Fetching GitHub interactions..."
+    "Placeholder text shown while async fetch is in progress.")
 
   ;;;###autoload
   (defun reomacs/dailies-insert-gh-interactions (days-back)
@@ -1268,6 +1433,32 @@ into the past from today."
             (insert (string-join interactions "\n"))
             (message "Inserted %d interactions for %s" (length interactions) target-date))
         (message "No GitHub interactions found for %s" target-date))))
+
+  ;;;###autoload
+  (defun reomacs/dailies-insert-gh-interactions-async (days-back)
+    "Insert GitHub interactions asynchronously.
+Like `reomacs/dailies-insert-gh-interactions' but non-blocking.
+Inserts a placeholder that gets replaced when results arrive."
+    (interactive
+     (list (read-number "Days back (0 for smart yesterday): " 0)))
+    (-let* ((target-date
+             (cond
+              ((and days-back (= days-back 0))
+               (-if-let (heading-time (reomacs/dailies--heading-date))
+                   (format-time-string "%Y-%m-%d"
+                                       (reomacs/dailies--previous-workday heading-time))
+                 (user-error "No date heading found above point")))
+              (days-back
+               (format-time-string "%Y-%m-%d"
+                                   (time-subtract (current-time)
+                                                  (* days-back 24 60 60))))
+              (t (format-time-string "%Y-%m-%d"))))
+            (marker (point-marker)))
+      (insert "+ " reomacs/dailies--gh-placeholder "\n")
+      (set-marker marker (line-beginning-position 0))  ; point to placeholder line
+      (set-marker-insertion-type marker t)  ; marker stays put when inserting before it
+      (message "Fetching GitHub interactions for %s..." target-date)
+      (reomacs/dailies--fetch-gh-interactions-async target-date marker)))
 
   ;;;###autoload
   (defun reomacs/org-heading-to-markdown-clipboard (&optional target-level md-level-offset)
