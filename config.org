@@ -1146,6 +1146,86 @@ Set as a file-local variable in dailies.org."
     :group 'reo101
     :safe #'listp)
 
+  (defcustom reomacs/dailies-gh-event-handlers
+    '((pr-create    . reomacs/dailies--format-pr-create)
+      (pr-close     . reomacs/dailies--format-pr-close)
+      (pr-merge     . reomacs/dailies--format-pr-merge)
+      (pr-review    . reomacs/dailies--format-pr-review)
+      (issue-create . reomacs/dailies--format-issue-create)
+      (push-with-pr . reomacs/dailies--format-push-with-pr)
+      (push-no-pr   . reomacs/dailies--format-push-no-pr))
+    "Alist mapping event types to formatter functions.
+Each function receives a plist with event-specific keys:
+  :url, :display-name, :number, :branch, :actor (where applicable).
+Should return an org-formatted string starting with \"+ \"."
+    :type '(alist :key-type symbol :value-type function)
+    :group 'reo101
+    :safe #'listp)
+
+  (defun reomacs/dailies--format-event (event-type props)
+    "Format EVENT-TYPE using handler from `reomacs/dailies-gh-event-handlers'.
+PROPS is a plist with event-specific data."
+    (-if-let (handler (alist-get event-type reomacs/dailies-gh-event-handlers))
+        (funcall handler props)
+      (format "+ [Unknown event: %s]" event-type)))
+
+  ;; Default formatters
+  (defun reomacs/dailies--format-pr-create (props)
+    (format "+ Create [[%s][~%s~ PR %s]]"
+            (plist-get props :url)
+            (plist-get props :display-name)
+            (plist-get props :number)))
+
+  (defun reomacs/dailies--format-pr-close (props)
+    (-let [actor (plist-get props :actor)]
+      (if actor
+          (format "+ Close [[%s][~%s~ PR %s]] (by @%s)"
+                  (plist-get props :url)
+                  (plist-get props :display-name)
+                  (plist-get props :number)
+                  actor)
+        (format "+ Close [[%s][~%s~ PR %s]]"
+                (plist-get props :url)
+                (plist-get props :display-name)
+                (plist-get props :number)))))
+
+  (defun reomacs/dailies--format-pr-merge (props)
+    (-let [actor (plist-get props :actor)]
+      (if actor
+          (format "+ Merge [[%s][~%s~ PR %s]] (by @%s)"
+                  (plist-get props :url)
+                  (plist-get props :display-name)
+                  (plist-get props :number)
+                  actor)
+        (format "+ Merge [[%s][~%s~ PR %s]]"
+                (plist-get props :url)
+                (plist-get props :display-name)
+                (plist-get props :number)))))
+
+  (defun reomacs/dailies--format-pr-review (props)
+    (format "+ Review [[%s][~%s~ PR %s]]"
+            (plist-get props :url)
+            (plist-get props :display-name)
+            (plist-get props :number)))
+
+  (defun reomacs/dailies--format-issue-create (props)
+    (format "+ Create [[%s][~%s~ Issue %s]]"
+            (plist-get props :url)
+            (plist-get props :display-name)
+            (plist-get props :number)))
+
+  (defun reomacs/dailies--format-push-with-pr (props)
+    (format "+ Push to ~%s~ branch ~%s~ ([[%s][PR %s]])"
+            (plist-get props :display-name)
+            (plist-get props :branch)
+            (plist-get props :url)
+            (plist-get props :number)))
+
+  (defun reomacs/dailies--format-push-no-pr (props)
+    (format "+ Push to ~%s~ branch ~%s~"
+            (plist-get props :display-name)
+            (plist-get props :branch)))
+
   (defun reomacs/dailies--repo-display-name (owner-repo repo-name)
     "Get display name for OWNER-REPO, falling back to REPO-NAME."
     (or (cdr (assoc owner-repo reomacs/dailies-repo-aliases))
@@ -1180,10 +1260,11 @@ Returns a list of org-formatted \"+ \" lines."
         (--each parsed
           (-let* [((&alist 'url url 'number number 'createdAt created 'closedAt closed 'state state
                            'repository (&alist 'name repo 'nameWithOwner owner-repo)) it)
-                  (display-name (reomacs/dailies--repo-display-name owner-repo repo))]
+                  (display-name (reomacs/dailies--repo-display-name owner-repo repo))
+                  (props (list :url url :display-name display-name :number number))]
             (cond
              ((reomacs/dailies--date-on-day-p created date)
-              (push (format "+ Create [[%s][~%s~ PR %s]]" url display-name number) results))
+              (push (reomacs/dailies--format-event 'pr-create props) results))
              ((reomacs/dailies--date-on-day-p closed date)
               (-let* ((events-json (shell-command-to-string
                                     (format "gh api /repos/%s/issues/%s/events --jq '[.[] | select(.event == \"closed\" or .event == \"merged\")] | last | {actor: .actor.login, event: .event}' 2>/dev/null"
@@ -1191,10 +1272,11 @@ Returns a list of org-formatted \"+ \" lines."
                       (event (ignore-errors (json-parse-string events-json :object-type 'alist)))
                       (actor (alist-get 'actor event))
                       (event-type (alist-get 'event event))
-                      (action (if (string= event-type "merged") "Merge" "Close")))
-                (if (string= actor my-username)
-                    (push (format "+ %s [[%s][~%s~ PR %s]]" action url display-name number) results)
-                  (push (format "+ %s [[%s][~%s~ PR %s]] (by @%s)" action url display-name number actor) results))))))))
+                      (event-sym (if (string= event-type "merged") 'pr-merge 'pr-close))
+                      (props-with-actor (if (string= actor my-username)
+                                            props
+                                          (plist-put (copy-sequence props) :actor actor))))
+                (push (reomacs/dailies--format-event event-sym props-with-actor) results)))))))
       ;; PRs I reviewed - check actual review dates
       (-when-let* ((output (shell-command-to-string
                             (format "gh search prs --reviewed-by=@me %s --json number,repository,url 2>/dev/null"
@@ -1209,7 +1291,9 @@ Returns a list of org-formatted \"+ \" lines."
                                          owner-repo number my-username date)))
                   (review-count (string-to-number (string-trim reviews-json)))]
             (when (> review-count 0)
-              (push (format "+ Review [[%s][~%s~ PR %s]]" url display-name number) results)))))
+              (push (reomacs/dailies--format-event
+                     'pr-review (list :url url :display-name display-name :number number))
+                    results)))))
       ;; Issues I authored
       (-when-let* ((output (shell-command-to-string
                             (format "gh search issues --author=@me %s --json number,repository,url,createdAt 2>/dev/null"
@@ -1220,7 +1304,37 @@ Returns a list of org-formatted \"+ \" lines."
                            'repository (&alist 'name repo 'nameWithOwner owner-repo)) it)
                   (display-name (reomacs/dailies--repo-display-name owner-repo repo))]
             (when (reomacs/dailies--date-on-day-p created date)
-              (push (format "+ Create [[%s][~%s~ Issue %s]]" url display-name number) results)))))
+              (push (reomacs/dailies--format-event
+                     'issue-create (list :url url :display-name display-name :number number))
+                    results)))))
+      ;; Branches pushed to
+      (-when-let* ((output (shell-command-to-string
+                            (format "gh api '/users/%s/events?per_page=100' --jq '[.[] | select(.type == \"PushEvent\" and (.created_at | startswith(\"%s\")))] | unique_by(.repo.name + .payload.ref) | .[] | {repo: .repo.name, branch: .payload.ref, commits: (.payload.commits | length)}' 2>/dev/null"
+                                    my-username date)))
+                   (lines (split-string (string-trim output) "\n" t)))
+        (--each lines
+          (-when-let* ((parsed (ignore-errors (json-parse-string it :object-type 'alist)))
+                       (owner-repo (alist-get 'repo parsed))
+                       (branch-ref (alist-get 'branch parsed))
+                       (branch (replace-regexp-in-string "^refs/heads/" "" branch-ref))
+                       (repo (car (last (split-string owner-repo "/"))))
+                       (display-name (reomacs/dailies--repo-display-name owner-repo repo))
+                       (owner (car (split-string owner-repo "/"))))
+            ;; Check if branch has an associated PR
+            (-let* ((pr-json (shell-command-to-string
+                              (format "gh api '/repos/%s/pulls?head=%s:%s&state=all' --jq '.[0] | {number, html_url, state}' 2>/dev/null"
+                                      owner-repo owner branch)))
+                    (pr (ignore-errors (json-parse-string (string-trim pr-json) :object-type 'alist)))
+                    (pr-number (alist-get 'number pr))
+                    (pr-url (alist-get 'html_url pr)))
+              (if pr-number
+                  (push (reomacs/dailies--format-event
+                         'push-with-pr (list :display-name display-name :branch branch
+                                             :url pr-url :number pr-number))
+                        results)
+                (push (reomacs/dailies--format-event
+                       'push-no-pr (list :display-name display-name :branch branch))
+                      results))))))
       (nreverse (delete-dups results))))
 
   (defun reomacs/dailies--gh-async (command callback)
@@ -1272,10 +1386,11 @@ MARKER points to placeholder line; results insert above it."
          (reomacs/dailies--fetch-searches state date-filter)))))
 
   (defun reomacs/dailies--fetch-searches (state date-filter)
-    "Spawn the 3 parallel search calls, updating STATE."
-    (-let ((date (gethash :date state)))
-      ;; Track 3 pending searches
-      (puthash :pending 3 state)
+    "Spawn the 4 parallel search calls, updating STATE."
+    (-let ((date (gethash :date state))
+           (username (gethash :username state)))
+      ;; Track 4 pending searches
+      (puthash :pending 4 state)
       ;; Authored PRs
       (reomacs/dailies--gh-async
        (format "gh search prs --author=@me %s --json number,repository,url,createdAt,closedAt,state" date-filter)
@@ -1296,6 +1411,16 @@ MARKER points to placeholder line; results insert above it."
        (lambda (output)
          (-when-let (parsed (ignore-errors (json-parse-string output :array-type 'list :object-type 'alist)))
            (reomacs/dailies--process-authored-issues state parsed))
+         (reomacs/dailies--maybe-finish state)))
+      ;; Branch pushes
+      (reomacs/dailies--gh-async
+       (list "gh" "api" (format "/users/%s/events?per_page=100" username)
+             "--jq" (format "[.[] | select(.type == \"PushEvent\" and (.created_at | startswith(\"%s\")))] | unique_by(.repo.name + .payload.ref) | .[] | {repo: .repo.name, branch: .payload.ref, commits: (.payload.commits | length)}"
+                            date))
+       (lambda (output)
+         (-when-let (lines (and (not (string-empty-p (string-trim output)))
+                                (split-string (string-trim output) "\n" t)))
+           (reomacs/dailies--process-branch-pushes state lines))
          (reomacs/dailies--maybe-finish state)))))
 
   (defun reomacs/dailies--insert-result (state line)
@@ -1315,11 +1440,12 @@ MARKER points to placeholder line; results insert above it."
       (--each prs
         (-let* [((&alist 'url url 'number number 'createdAt created 'closedAt closed
                          'repository (&alist 'name repo 'nameWithOwner owner-repo)) it)
-                (display-name (reomacs/dailies--repo-display-name owner-repo repo))]
+                (display-name (reomacs/dailies--repo-display-name owner-repo repo))
+                (props (list :url url :display-name display-name :number number))]
           (cond
            ((reomacs/dailies--date-on-day-p created date)
             (reomacs/dailies--insert-result
-             state (format "+ Create [[%s][~%s~ PR %s]]" url display-name number)))
+             state (reomacs/dailies--format-event 'pr-create props)))
            ((reomacs/dailies--date-on-day-p closed date)
             ;; Need to fetch event details - increment pending
             (puthash :pending (1+ (gethash :pending state)) state)
@@ -1330,11 +1456,12 @@ MARKER points to placeholder line; results insert above it."
                (-let* [(event (ignore-errors (json-parse-string (string-trim output) :object-type 'alist)))
                        (actor (alist-get 'actor event))
                        (event-type (alist-get 'event event))
-                       (action (if (string= event-type "merged") "Merge" "Close"))
-                       (line (if (string= actor username)
-                                 (format "+ %s [[%s][~%s~ PR %s]]" action url display-name number)
-                               (format "+ %s [[%s][~%s~ PR %s]] (by @%s)" action url display-name number actor)))]
-                 (reomacs/dailies--insert-result state line))
+                       (event-sym (if (string= event-type "merged") 'pr-merge 'pr-close))
+                       (props-with-actor (if (string= actor username)
+                                             props
+                                           (plist-put (copy-sequence props) :actor actor)))]
+                 (reomacs/dailies--insert-result
+                  state (reomacs/dailies--format-event event-sym props-with-actor)))
                (reomacs/dailies--maybe-finish state)))))))))
 
   (defun reomacs/dailies--process-reviewed-prs (state prs)
@@ -1356,7 +1483,8 @@ MARKER points to placeholder line; results insert above it."
              (-let [count (string-to-number (string-trim output))]
                (when (> count 0)
                  (reomacs/dailies--insert-result
-                  state (format "+ Review [[%s][~%s~ PR %s]]" url display-name number))))
+                  state (reomacs/dailies--format-event
+                         'pr-review (list :url url :display-name display-name :number number)))))
              (reomacs/dailies--maybe-finish state)))))))
 
   (defun reomacs/dailies--process-authored-issues (state issues)
@@ -1369,7 +1497,37 @@ MARKER points to placeholder line; results insert above it."
                 (display-name (reomacs/dailies--repo-display-name owner-repo repo))]
           (when (reomacs/dailies--date-on-day-p created date)
             (reomacs/dailies--insert-result
-             state (format "+ Create [[%s][~%s~ Issue %s]]" url display-name number)))))))
+             state (reomacs/dailies--format-event
+                    'issue-create (list :url url :display-name display-name :number number))))))))
+
+  (defun reomacs/dailies--process-branch-pushes (state lines)
+    "Process branch push events, spawning PR lookups for each branch."
+    (-let ((repo-aliases (gethash :repo-aliases state)))
+      (--each lines
+        (-when-let* ((parsed (ignore-errors (json-parse-string it :object-type 'alist)))
+                     (owner-repo (alist-get 'repo parsed))
+                     (branch-ref (alist-get 'branch parsed))
+                     (branch (replace-regexp-in-string "^refs/heads/" "" branch-ref))
+                     (repo (car (last (split-string owner-repo "/"))))
+                     (display-name (reomacs/dailies--repo-display-name owner-repo repo))
+                     (owner (car (split-string owner-repo "/"))))
+          ;; Increment pending for PR lookup
+          (puthash :pending (1+ (gethash :pending state)) state)
+          (reomacs/dailies--gh-async
+           (list "gh" "api" (format "/repos/%s/pulls?head=%s:%s&state=all" owner-repo owner branch)
+                 "--jq" ".[0] | {number, html_url}")
+           (lambda (output)
+             (-let* [(pr (ignore-errors (json-parse-string (string-trim output) :object-type 'alist)))
+                     (pr-number (alist-get 'number pr))
+                     (pr-url (alist-get 'html_url pr))]
+               (reomacs/dailies--insert-result
+                state (if pr-number
+                          (reomacs/dailies--format-event
+                           'push-with-pr (list :display-name display-name :branch branch
+                                               :url pr-url :number pr-number))
+                        (reomacs/dailies--format-event
+                         'push-no-pr (list :display-name display-name :branch branch)))))
+             (reomacs/dailies--maybe-finish state)))))))
 
   (defun reomacs/dailies--maybe-finish (state)
     "Decrement pending count in STATE, remove placeholder when done."
@@ -1410,23 +1568,23 @@ Returns a time value or nil."
   ;;;###autoload
   (defun reomacs/dailies-insert-gh-interactions (days-back)
     "Insert GitHub interactions for a date into the dailies buffer.
-DAYS-BACK of 0 uses the smart 'yesterday' (previous workday) based
-on the current ** heading date. Positive numbers go that many days
-into the past from today."
+DAYS-BACK of nil (no input) uses the smart 'yesterday' (previous workday)
+based on the current ** heading date. 0 means today. Positive numbers
+go that many days into the past from today."
     (interactive
-     (list (read-number "Days back (0 for smart yesterday): " 0)))
+     (list (let ((input (read-string "Days back (empty for smart yesterday, 0 for today): ")))
+             (if (string-empty-p input) nil (string-to-number input)))))
     (-let* ((target-date
              (cond
-              ((and days-back (= days-back 0))
+              ((null days-back)
                (-if-let (heading-time (reomacs/dailies--heading-date))
                    (format-time-string "%Y-%m-%d"
                                        (reomacs/dailies--previous-workday heading-time))
                  (user-error "No date heading found above point")))
-              (days-back
+              (t
                (format-time-string "%Y-%m-%d"
                                    (time-subtract (current-time)
-                                                  (* days-back 24 60 60))))
-              (t (format-time-string "%Y-%m-%d"))))
+                                                  (* days-back 24 60 60))))))
             (interactions (reomacs/dailies--fetch-gh-interactions target-date)))
       (if interactions
           (progn
@@ -1438,21 +1596,22 @@ into the past from today."
   (defun reomacs/dailies-insert-gh-interactions-async (days-back)
     "Insert GitHub interactions asynchronously.
 Like `reomacs/dailies-insert-gh-interactions' but non-blocking.
-Inserts a placeholder that gets replaced when results arrive."
+Inserts a placeholder that gets replaced when results arrive.
+DAYS-BACK of nil (no input) uses smart yesterday, 0 means today."
     (interactive
-     (list (read-number "Days back (0 for smart yesterday): " 0)))
+     (list (let ((input (read-string "Days back (empty for smart yesterday, 0 for today): ")))
+             (if (string-empty-p input) nil (string-to-number input)))))
     (-let* ((target-date
              (cond
-              ((and days-back (= days-back 0))
+              ((null days-back)
                (-if-let (heading-time (reomacs/dailies--heading-date))
                    (format-time-string "%Y-%m-%d"
                                        (reomacs/dailies--previous-workday heading-time))
                  (user-error "No date heading found above point")))
-              (days-back
+              (t
                (format-time-string "%Y-%m-%d"
                                    (time-subtract (current-time)
-                                                  (* days-back 24 60 60))))
-              (t (format-time-string "%Y-%m-%d"))))
+                                                  (* days-back 24 60 60))))))
             (marker (point-marker)))
       (insert "+ " reomacs/dailies--gh-placeholder "\n")
       (set-marker marker (line-beginning-position 0))  ; point to placeholder line
