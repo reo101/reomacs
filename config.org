@@ -14,6 +14,14 @@
 
   ;; Prevent package.el from loading packages before init.el
   (setq package-quickstart nil)
+
+  ;; Native compilation (Emacs 28+)
+  (when (featurep 'native-compile)
+    (setq native-comp-jit-compilation t
+          native-comp-async-report-warnings-errors 'silent))
+
+  ;; Prefer newer source files over stale bytecode
+  (setq load-prefer-newer t)
 #+end_src
 
 * Init
@@ -123,9 +131,6 @@ Skips display-touching initialization on reload to avoid PGTK crashes."
   ;; (setopt scroll-margin 1)
 
   (setq ring-bell-function 'ignore)
-
-  ;; Suppress native-comp warnings for known upstream issues
-  (setq native-comp-async-report-warnings-errors 'silent)
 
   (setopt x-select-enable-clipboard t)
   (fset 'yes-or-no-p 'y-or-n-p)
