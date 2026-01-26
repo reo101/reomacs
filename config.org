@@ -894,7 +894,7 @@ Skips display-touching initialization on reload to avoid PGTK crashes."
 
 #+begin_src emacs-lisp
   (use-package project
-    :straight nil
+    :straight (:type built-in)
     :custom
     (project-switch-commands
      '((magit-project-status "Magit")
