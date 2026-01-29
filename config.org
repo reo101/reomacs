@@ -1241,101 +1241,166 @@ PROPS is a plist with event-specific data."
     "Get the current GitHub username."
     (string-trim (shell-command-to-string "gh api user --jq .login 2>/dev/null")))
 
+  ;; Runner abstraction for sync/async unification
+  ;; A runner is a plist with:
+  ;;   :fetch (cmd callback) - execute CMD, call CALLBACK with output
+  ;;   :emit (line) - output a result line
+  ;;   :spawn () - register a pending sub-request
+  ;;   :finish () - mark a sub-request complete
+  ;;   :date - target date string
+  ;;   :username - GitHub username
+
+  (defun reomacs/dailies--run-gh-fetch (runner)
+    "Execute GitHub interactions fetch using RUNNER abstraction."
+    (-let* (((&plist :date :username :fetch :spawn :finish) runner)
+            (next-date (--> (concat date "T00:00:00")
+                            (date-to-time it)
+                            (time-add it (* 24 60 60))
+                            (format-time-string "%Y-%m-%d" it)))
+            (date-filter (format "--updated=%s..%s" date next-date)))
+      ;; Spawn 4 parallel searches
+      (-dotimes 4 (lambda (_) (funcall spawn)))
+      ;; Authored PRs
+      (funcall fetch
+               (format "gh search prs --author=@me %s --json number,repository,url,createdAt,closedAt,state" date-filter)
+               (lambda (output)
+                 (-some--> output
+                   (json-parse-string it :array-type 'list :object-type 'alist)
+                   (reomacs/dailies--process-prs runner it))
+                 (funcall finish)))
+      ;; Reviewed PRs
+      (funcall fetch
+               (format "gh search prs --reviewed-by=@me %s --json number,repository,url" date-filter)
+               (lambda (output)
+                 (-some--> output
+                   (json-parse-string it :array-type 'list :object-type 'alist)
+                   (reomacs/dailies--process-reviews runner it))
+                 (funcall finish)))
+      ;; Authored issues
+      (funcall fetch
+               (format "gh search issues --author=@me %s --json number,repository,url,createdAt" date-filter)
+               (lambda (output)
+                 (-some--> output
+                   (json-parse-string it :array-type 'list :object-type 'alist)
+                   (reomacs/dailies--process-issues runner it))
+                 (funcall finish)))
+      ;; Branch pushes
+      (funcall fetch
+               (list "gh" "api" (format "/users/%s/events?per_page=100" username)
+                     "--jq" (format "[.[] | select(.type == \"PushEvent\" and (.created_at | startswith(\"%s\")))] | unique_by(.repo.name + .payload.ref) | .[] | {repo: .repo.name, branch: .payload.ref}"
+                                    date))
+               (lambda (output)
+                 (-some--> (string-trim output)
+                   (unless (string-empty-p it) it)
+                   (split-string it "\n" t)
+                   (reomacs/dailies--process-pushes runner it))
+                 (funcall finish)))))
+
+  (defun reomacs/dailies--process-prs (runner prs)
+    "Process authored PRs using RUNNER."
+    (-let [(&plist :date :username :fetch :emit :spawn :finish) runner]
+      (--each prs
+        (-let* [((&alist 'url 'number 'createdAt 'closedAt
+                         'repository (&alist 'name 'nameWithOwner)) it)
+                (display-name (reomacs/dailies--repo-display-name nameWithOwner name))
+                (props (list :url url :display-name display-name :number number))]
+          (cond
+           ((reomacs/dailies--date-on-day-p createdAt date)
+            (funcall emit (reomacs/dailies--format-event 'pr-create props)))
+           ((reomacs/dailies--date-on-day-p closedAt date)
+            (funcall spawn)
+            (funcall fetch
+                     (list "gh" "api" (format "/repos/%s/issues/%s/events" nameWithOwner number)
+                           "--jq" "[.[] | select(.event == \"closed\" or .event == \"merged\")] | last | {actor: .actor.login, event: .event}")
+                     (lambda (output)
+                       (-let* [((&alist 'actor 'event) (ignore-errors (json-parse-string (string-trim output) :object-type 'alist)))
+                               (event-sym (if (string= event "merged") 'pr-merge 'pr-close))
+                               (props-final (-if-let (other (and (not (string= actor username)) actor))
+                                                (plist-put (copy-sequence props) :actor other)
+                                              props))]
+                         (funcall emit (reomacs/dailies--format-event event-sym props-final)))
+                       (funcall finish)))))))))
+
+  (defun reomacs/dailies--process-reviews (runner prs)
+    "Process reviewed PRs using RUNNER."
+    (-let [(&plist :date :username :fetch :emit :spawn :finish) runner]
+      (--each prs
+        (-let* [((&alist 'url 'number 'repository (&alist 'name 'nameWithOwner)) it)
+                (display-name (reomacs/dailies--repo-display-name nameWithOwner name))]
+          (funcall spawn)
+          (funcall fetch
+                   (list "gh" "api" (format "/repos/%s/pulls/%s/reviews" nameWithOwner number)
+                         "--jq" (format "[.[] | select(.user.login == \"%s\" and (.submitted_at | startswith(\"%s\")))] | length"
+                                        username date))
+                   (lambda (output)
+                     (-let [count (-> output string-trim string-to-number)]
+                       (when (> count 0)
+                         (funcall emit (reomacs/dailies--format-event
+                                        'pr-review (list :url url :display-name display-name :number number)))))
+                     (funcall finish)))))))
+
+  (defun reomacs/dailies--process-issues (runner issues)
+    "Process authored issues using RUNNER."
+    (-let [(&plist :date :emit) runner]
+      (--each issues
+        (-let* [((&alist 'url 'number 'createdAt 'repository (&alist 'name 'nameWithOwner)) it)
+                (display-name (reomacs/dailies--repo-display-name nameWithOwner name))]
+          (when (reomacs/dailies--date-on-day-p createdAt date)
+            (funcall emit (reomacs/dailies--format-event
+                           'issue-create (list :url url :display-name display-name :number number))))))))
+
+  (defun reomacs/dailies--process-pushes (runner lines)
+    "Process branch push events using RUNNER."
+    (-let [(&plist :fetch :emit :spawn :finish) runner]
+      (--each lines
+        (-when-let* [((&alist 'repo 'branch) (ignore-errors (json-parse-string it :object-type 'alist)))
+                     (branch-name (replace-regexp-in-string "^refs/heads/" "" branch))
+                     (repo-name (-last-item (split-string repo "/")))
+                     (display-name (reomacs/dailies--repo-display-name repo repo-name))
+                     (owner (-first-item (split-string repo "/")))]
+          (funcall spawn)
+          (funcall fetch
+                   (list "gh" "api" (format "/repos/%s/pulls?head=%s:%s&state=all" repo owner branch-name)
+                         "--jq" ".[0] | {number, html_url}")
+                   (lambda (output)
+                     (-let [(&alist 'number 'html_url) (ignore-errors (json-parse-string (string-trim output) :object-type 'alist))]
+                       (funcall emit (if number
+                                         (reomacs/dailies--format-event
+                                          'push-with-pr (list :display-name display-name :branch branch-name
+                                                              :url html_url :number number))
+                                       (reomacs/dailies--format-event
+                                        'push-no-pr (list :display-name display-name :branch branch-name)))))
+                     (funcall finish)))))))
+
+  (defun reomacs/dailies--make-sync-runner (date)
+    "Create a sync runner for DATE.
+Returns a plist with runner functions and a results cell."
+    (-let* ((results (list nil))  ; cons cell to accumulate results
+            (username (reomacs/dailies--gh-username)))
+      (list :date date
+            :username username
+            :results results
+            :fetch (lambda (cmd callback)
+                     (--> (if (listp cmd)
+                              (mapconcat #'shell-quote-argument cmd " ")
+                            cmd)
+                          (concat it " 2>/dev/null")
+                          (shell-command-to-string it)
+                          (funcall callback it)))
+            :emit (lambda (line) (push line (car results)))
+            :spawn #'ignore
+            :finish #'ignore)))
+
   (defun reomacs/dailies--fetch-gh-interactions (date)
     "Fetch GitHub PR/issue interactions for DATE using gh CLI.
 DATE should be a string like \"2025-01-26\".
 Returns a list of org-formatted \"+ \" lines."
-    (-let* ((next-date (format-time-string
-                        "%Y-%m-%d"
-                        (time-add (date-to-time (concat date "T00:00:00"))
-                                  (* 24 60 60))))
-            (date-filter (format "--updated=%s..%s" date next-date))
-            (my-username (reomacs/dailies--gh-username))
-            (results '()))
-      ;; PRs I authored
-      (-when-let* ((output (shell-command-to-string
-                            (format "gh search prs --author=@me %s --json number,repository,url,createdAt,closedAt,state 2>/dev/null"
-                                    date-filter)))
-                   (parsed (ignore-errors (json-parse-string output :array-type 'list :object-type 'alist))))
-        (--each parsed
-          (-let* [((&alist 'url url 'number number 'createdAt created 'closedAt closed 'state state
-                           'repository (&alist 'name repo 'nameWithOwner owner-repo)) it)
-                  (display-name (reomacs/dailies--repo-display-name owner-repo repo))
-                  (props (list :url url :display-name display-name :number number))]
-            (cond
-             ((reomacs/dailies--date-on-day-p created date)
-              (push (reomacs/dailies--format-event 'pr-create props) results))
-             ((reomacs/dailies--date-on-day-p closed date)
-              (-let* ((events-json (shell-command-to-string
-                                    (format "gh api /repos/%s/issues/%s/events --jq '[.[] | select(.event == \"closed\" or .event == \"merged\")] | last | {actor: .actor.login, event: .event}' 2>/dev/null"
-                                            owner-repo number)))
-                      (event (ignore-errors (json-parse-string events-json :object-type 'alist)))
-                      (actor (alist-get 'actor event))
-                      (event-type (alist-get 'event event))
-                      (event-sym (if (string= event-type "merged") 'pr-merge 'pr-close))
-                      (props-with-actor (if (string= actor my-username)
-                                            props
-                                          (plist-put (copy-sequence props) :actor actor))))
-                (push (reomacs/dailies--format-event event-sym props-with-actor) results)))))))
-      ;; PRs I reviewed - check actual review dates
-      (-when-let* ((output (shell-command-to-string
-                            (format "gh search prs --reviewed-by=@me %s --json number,repository,url 2>/dev/null"
-                                    date-filter)))
-                   (parsed (ignore-errors (json-parse-string output :array-type 'list :object-type 'alist))))
-        (--each parsed
-          (-let* [((&alist 'url url 'number number
-                           'repository (&alist 'name repo 'nameWithOwner owner-repo)) it)
-                  (display-name (reomacs/dailies--repo-display-name owner-repo repo))
-                  (reviews-json (shell-command-to-string
-                                 (format "gh api /repos/%s/pulls/%s/reviews --jq '[.[] | select(.user.login == \"%s\" and (.submitted_at | startswith(\"%s\")))] | length' 2>/dev/null"
-                                         owner-repo number my-username date)))
-                  (review-count (string-to-number (string-trim reviews-json)))]
-            (when (> review-count 0)
-              (push (reomacs/dailies--format-event
-                     'pr-review (list :url url :display-name display-name :number number))
-                    results)))))
-      ;; Issues I authored
-      (-when-let* ((output (shell-command-to-string
-                            (format "gh search issues --author=@me %s --json number,repository,url,createdAt 2>/dev/null"
-                                    date-filter)))
-                   (parsed (ignore-errors (json-parse-string output :array-type 'list :object-type 'alist))))
-        (--each parsed
-          (-let* [((&alist 'url url 'number number 'createdAt created
-                           'repository (&alist 'name repo 'nameWithOwner owner-repo)) it)
-                  (display-name (reomacs/dailies--repo-display-name owner-repo repo))]
-            (when (reomacs/dailies--date-on-day-p created date)
-              (push (reomacs/dailies--format-event
-                     'issue-create (list :url url :display-name display-name :number number))
-                    results)))))
-      ;; Branches pushed to
-      (-when-let* ((output (shell-command-to-string
-                            (format "gh api '/users/%s/events?per_page=100' --jq '[.[] | select(.type == \"PushEvent\" and (.created_at | startswith(\"%s\")))] | unique_by(.repo.name + .payload.ref) | .[] | {repo: .repo.name, branch: .payload.ref, commits: (.payload.commits | length)}' 2>/dev/null"
-                                    my-username date)))
-                   (lines (split-string (string-trim output) "\n" t)))
-        (--each lines
-          (-when-let* ((parsed (ignore-errors (json-parse-string it :object-type 'alist)))
-                       (owner-repo (alist-get 'repo parsed))
-                       (branch-ref (alist-get 'branch parsed))
-                       (branch (replace-regexp-in-string "^refs/heads/" "" branch-ref))
-                       (repo (car (last (split-string owner-repo "/"))))
-                       (display-name (reomacs/dailies--repo-display-name owner-repo repo))
-                       (owner (car (split-string owner-repo "/"))))
-            ;; Check if branch has an associated PR
-            (-let* ((pr-json (shell-command-to-string
-                              (format "gh api '/repos/%s/pulls?head=%s:%s&state=all' --jq '.[0] | {number, html_url, state}' 2>/dev/null"
-                                      owner-repo owner branch)))
-                    (pr (ignore-errors (json-parse-string (string-trim pr-json) :object-type 'alist)))
-                    (pr-number (alist-get 'number pr))
-                    (pr-url (alist-get 'html_url pr)))
-              (if pr-number
-                  (push (reomacs/dailies--format-event
-                         'push-with-pr (list :display-name display-name :branch branch
-                                             :url pr-url :number pr-number))
-                        results)
-                (push (reomacs/dailies--format-event
-                       'push-no-pr (list :display-name display-name :branch branch))
-                      results))))))
-      (nreverse (delete-dups results))))
+    (-let [runner (reomacs/dailies--make-sync-runner date)]
+      (reomacs/dailies--run-gh-fetch runner)
+      (->> (plist-get runner :results)
+           car
+           delete-dups
+           nreverse)))
 
   (defun reomacs/dailies--gh-async (command callback)
     "Run gh COMMAND asynchronously, call CALLBACK with output string.
@@ -1363,185 +1428,49 @@ Sets TERM=dumb and sends EOF to prevent gh from blocking on terminal."
       (process-send-eof proc)
       proc))
 
+  (defun reomacs/dailies--make-async-runner (date marker)
+    "Create an async runner for DATE with MARKER for insertion.
+Returns a plist with runner functions using async state management."
+    (-let* ((state (make-hash-table :test 'eq)))
+      (puthash :pending 0 state)
+      (puthash :marker marker state)
+      (list :date date
+            :username nil  ; filled in by initial fetch
+            :state state
+            :fetch (lambda (cmd callback)
+                     (reomacs/dailies--gh-async cmd callback))
+            :emit (lambda (line)
+                    (-when-let (m (gethash :marker state))
+                      (when (marker-buffer m)
+                        (with-current-buffer (marker-buffer m)
+                          (save-excursion
+                            (goto-char m)
+                            (insert-before-markers line "\n"))))))
+            :spawn (lambda ()
+                     (puthash :pending (1+ (gethash :pending state)) state))
+            :finish (lambda ()
+                      (puthash :pending (1- (gethash :pending state)) state)
+                      (when (<= (gethash :pending state) 0)
+                        (-when-let (m (gethash :marker state))
+                          (when (marker-buffer m)
+                            (with-current-buffer (marker-buffer m)
+                              (save-excursion
+                                (goto-char m)
+                                (when (looking-at (regexp-quote (concat "+ " reomacs/dailies--gh-placeholder)))
+                                  (delete-region (point) (line-beginning-position 2))))))
+                          (message "GitHub interactions fetch complete")
+                          (set-marker m nil)))))))
+
   (defun reomacs/dailies--fetch-gh-interactions-async (date marker)
     "Fetch GitHub interactions for DATE asynchronously.
 MARKER points to placeholder line; results insert above it."
-    (-let* ((next-date (format-time-string
-                        "%Y-%m-%d"
-                        (time-add (date-to-time (concat date "T00:00:00"))
-                                  (* 24 60 60))))
-            (date-filter (format "--updated=%s..%s" date next-date))
-            (repo-aliases reomacs/dailies-repo-aliases)
-            (state (make-hash-table :test 'eq)))
-      (puthash :pending 0 state)
-      (puthash :username nil state)
-      (puthash :date date state)
-      (puthash :marker marker state)
-      (puthash :repo-aliases repo-aliases state)
-      ;; First get username, then spawn parallel searches
+    (-let [runner (reomacs/dailies--make-async-runner date marker)]
+      ;; First get username, then run the fetch
       (reomacs/dailies--gh-async
        "gh api user --jq .login"
        (lambda (output)
-         (puthash :username (string-trim output) state)
-         (reomacs/dailies--fetch-searches state date-filter)))))
-
-  (defun reomacs/dailies--fetch-searches (state date-filter)
-    "Spawn the 4 parallel search calls, updating STATE."
-    (-let ((date (gethash :date state))
-           (username (gethash :username state)))
-      ;; Track 4 pending searches
-      (puthash :pending 4 state)
-      ;; Authored PRs
-      (reomacs/dailies--gh-async
-       (format "gh search prs --author=@me %s --json number,repository,url,createdAt,closedAt,state" date-filter)
-       (lambda (output)
-         (-when-let (parsed (ignore-errors (json-parse-string output :array-type 'list :object-type 'alist)))
-           (reomacs/dailies--process-authored-prs state parsed))
-         (reomacs/dailies--maybe-finish state)))
-      ;; Reviewed PRs
-      (reomacs/dailies--gh-async
-       (format "gh search prs --reviewed-by=@me %s --json number,repository,url" date-filter)
-       (lambda (output)
-         (-when-let (parsed (ignore-errors (json-parse-string output :array-type 'list :object-type 'alist)))
-           (reomacs/dailies--process-reviewed-prs state parsed))
-         (reomacs/dailies--maybe-finish state)))
-      ;; Authored issues
-      (reomacs/dailies--gh-async
-       (format "gh search issues --author=@me %s --json number,repository,url,createdAt" date-filter)
-       (lambda (output)
-         (-when-let (parsed (ignore-errors (json-parse-string output :array-type 'list :object-type 'alist)))
-           (reomacs/dailies--process-authored-issues state parsed))
-         (reomacs/dailies--maybe-finish state)))
-      ;; Branch pushes
-      (reomacs/dailies--gh-async
-       (list "gh" "api" (format "/users/%s/events?per_page=100" username)
-             "--jq" (format "[.[] | select(.type == \"PushEvent\" and (.created_at | startswith(\"%s\")))] | unique_by(.repo.name + .payload.ref) | .[] | {repo: .repo.name, branch: .payload.ref, commits: (.payload.commits | length)}"
-                            date))
-       (lambda (output)
-         (-when-let (lines (and (not (string-empty-p (string-trim output)))
-                                (split-string (string-trim output) "\n" t)))
-           (reomacs/dailies--process-branch-pushes state lines))
-         (reomacs/dailies--maybe-finish state)))))
-
-  (defun reomacs/dailies--insert-result (state line)
-    "Insert LINE at marker position in STATE, above the placeholder."
-    (-when-let (marker (gethash :marker state))
-      (when (marker-buffer marker)
-        (with-current-buffer (marker-buffer marker)
-          (save-excursion
-            (goto-char marker)
-            (insert-before-markers line "\n"))))))
-
-  (defun reomacs/dailies--process-authored-prs (state prs)
-    "Process authored PRs, spawning detail fetches for closed ones."
-    (-let ((date (gethash :date state))
-           (repo-aliases (gethash :repo-aliases state))
-           (username (gethash :username state)))
-      (--each prs
-        (-let* [((&alist 'url url 'number number 'createdAt created 'closedAt closed
-                         'repository (&alist 'name repo 'nameWithOwner owner-repo)) it)
-                (display-name (reomacs/dailies--repo-display-name owner-repo repo))
-                (props (list :url url :display-name display-name :number number))]
-          (cond
-           ((reomacs/dailies--date-on-day-p created date)
-            (reomacs/dailies--insert-result
-             state (reomacs/dailies--format-event 'pr-create props)))
-           ((reomacs/dailies--date-on-day-p closed date)
-            ;; Need to fetch event details - increment pending
-            (puthash :pending (1+ (gethash :pending state)) state)
-            (reomacs/dailies--gh-async
-             (list "gh" "api" (format "/repos/%s/issues/%s/events" owner-repo number)
-                   "--jq" "[.[] | select(.event == \"closed\" or .event == \"merged\")] | last | {actor: .actor.login, event: .event}")
-             (lambda (output)
-               (-let* [(event (ignore-errors (json-parse-string (string-trim output) :object-type 'alist)))
-                       (actor (alist-get 'actor event))
-                       (event-type (alist-get 'event event))
-                       (event-sym (if (string= event-type "merged") 'pr-merge 'pr-close))
-                       (props-with-actor (if (string= actor username)
-                                             props
-                                           (plist-put (copy-sequence props) :actor actor)))]
-                 (reomacs/dailies--insert-result
-                  state (reomacs/dailies--format-event event-sym props-with-actor)))
-               (reomacs/dailies--maybe-finish state)))))))))
-
-  (defun reomacs/dailies--process-reviewed-prs (state prs)
-    "Process reviewed PRs, spawning detail fetches to verify review date."
-    (-let ((date (gethash :date state))
-           (repo-aliases (gethash :repo-aliases state))
-           (username (gethash :username state)))
-      (--each prs
-        (-let* [((&alist 'url url 'number number
-                         'repository (&alist 'name repo 'nameWithOwner owner-repo)) it)
-                (display-name (reomacs/dailies--repo-display-name owner-repo repo))]
-          ;; Fetch review details to confirm review was on this date
-          (puthash :pending (1+ (gethash :pending state)) state)
-          (reomacs/dailies--gh-async
-           (list "gh" "api" (format "/repos/%s/pulls/%s/reviews" owner-repo number)
-                 "--jq" (format "[.[] | select(.user.login == \"%s\" and (.submitted_at | startswith(\"%s\")))] | length"
-                                username date))
-           (lambda (output)
-             (-let [count (string-to-number (string-trim output))]
-               (when (> count 0)
-                 (reomacs/dailies--insert-result
-                  state (reomacs/dailies--format-event
-                         'pr-review (list :url url :display-name display-name :number number)))))
-             (reomacs/dailies--maybe-finish state)))))))
-
-  (defun reomacs/dailies--process-authored-issues (state issues)
-    "Process authored issues, adding created ones to results."
-    (-let ((date (gethash :date state))
-           (repo-aliases (gethash :repo-aliases state)))
-      (--each issues
-        (-let* [((&alist 'url url 'number number 'createdAt created
-                         'repository (&alist 'name repo 'nameWithOwner owner-repo)) it)
-                (display-name (reomacs/dailies--repo-display-name owner-repo repo))]
-          (when (reomacs/dailies--date-on-day-p created date)
-            (reomacs/dailies--insert-result
-             state (reomacs/dailies--format-event
-                    'issue-create (list :url url :display-name display-name :number number))))))))
-
-  (defun reomacs/dailies--process-branch-pushes (state lines)
-    "Process branch push events, spawning PR lookups for each branch."
-    (-let ((repo-aliases (gethash :repo-aliases state)))
-      (--each lines
-        (-when-let* ((parsed (ignore-errors (json-parse-string it :object-type 'alist)))
-                     (owner-repo (alist-get 'repo parsed))
-                     (branch-ref (alist-get 'branch parsed))
-                     (branch (replace-regexp-in-string "^refs/heads/" "" branch-ref))
-                     (repo (car (last (split-string owner-repo "/"))))
-                     (display-name (reomacs/dailies--repo-display-name owner-repo repo))
-                     (owner (car (split-string owner-repo "/"))))
-          ;; Increment pending for PR lookup
-          (puthash :pending (1+ (gethash :pending state)) state)
-          (reomacs/dailies--gh-async
-           (list "gh" "api" (format "/repos/%s/pulls?head=%s:%s&state=all" owner-repo owner branch)
-                 "--jq" ".[0] | {number, html_url}")
-           (lambda (output)
-             (-let* [(pr (ignore-errors (json-parse-string (string-trim output) :object-type 'alist)))
-                     (pr-number (alist-get 'number pr))
-                     (pr-url (alist-get 'html_url pr))]
-               (reomacs/dailies--insert-result
-                state (if pr-number
-                          (reomacs/dailies--format-event
-                           'push-with-pr (list :display-name display-name :branch branch
-                                               :url pr-url :number pr-number))
-                        (reomacs/dailies--format-event
-                         'push-no-pr (list :display-name display-name :branch branch)))))
-             (reomacs/dailies--maybe-finish state)))))))
-
-  (defun reomacs/dailies--maybe-finish (state)
-    "Decrement pending count in STATE, remove placeholder when done."
-    (puthash :pending (1- (gethash :pending state)) state)
-    (when (<= (gethash :pending state) 0)
-      (-when-let (marker (gethash :marker state))
-        (when (marker-buffer marker)
-          (with-current-buffer (marker-buffer marker)
-            (save-excursion
-              (goto-char marker)
-              (when (looking-at (regexp-quote (concat "+ " reomacs/dailies--gh-placeholder)))
-                (delete-region (point) (line-beginning-position 2))))))
-        (message "GitHub interactions fetch complete")
-        (set-marker marker nil))))
+         (plist-put runner :username (string-trim output))
+         (reomacs/dailies--run-gh-fetch runner)))))
 
   (defun reomacs/dailies--previous-workday (from-time)
     "Return the previous workday before FROM-TIME.
