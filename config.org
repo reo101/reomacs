@@ -184,6 +184,16 @@ Skips display-touching initialization on reload to avoid PGTK crashes."
         (eval-print-last-sexp)))
     (load bootstrap-file nil 'nomessage))
   (setopt straight-use-package-by-default t)
+  ;; Pin exact versions with straight.el lockfile support.
+  ;; Use M-x reomacs/straight-freeze to update the lockfile.
+  (setopt straight-vc-git-default-clone-depth 1)
+  (setopt straight-check-for-modifications '(check-on-save find-when-checking))
+
+  (defun reomacs/straight-freeze ()
+    "Freeze straight.el versions to lockfile."
+    (interactive)
+    (straight-freeze-versions)
+    (message "straight: versions frozen"))
 
 #+end_src
 
