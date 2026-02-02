@@ -298,23 +298,43 @@ Skips display-touching initialization on reload to avoid PGTK crashes."
   ;; NixOS provides grammars via treesit-grammars.with-all-grammars
   ;; They're in the emacs closure but in a separate store path
   (when (treesit-available-p)
-    ;; Find grammar paths - check system paths and nix store treesit-grammars
-    (setq treesit-extra-load-path
-          (->> (-concat
-                (list "/run/current-system/sw/lib/"
-                      "/run/current-system/sw/lib/tree-sitter/")
-                ;; Find all emacs-treesit-grammars in nix store
-                (--map (expand-file-name "lib/" it)
-                       (directory-files "/nix/store/" t "emacs-treesit-grammars$")))
-               (-filter #'file-directory-p)))
+    (defvar reomacs/treesit-load-paths-cached nil
+      "Cached tree-sitter grammar load paths for this Emacs session.")
 
-    ;; Remap major modes to their tree-sitter variants
-    (setq major-mode-remap-alist
-          (->> '((bash sh) c c++ cmake css dockerfile go html java
-                 (javascript js js2) json lua nix python ruby rust toml tsx typescript yaml)
-               (--mapcat (let* ((modes (if (listp it) it (list it)))
-                                (ts-mode (intern (format "%s-ts-mode" (-first-item modes)))))
-                           (--map (cons (intern (format "%s-mode" it)) ts-mode) modes)))))
+    (defun reomacs/treesit--discover-load-paths ()
+      "Return cached grammar paths, scanning nix store only once."
+      (or reomacs/treesit-load-paths-cached
+          (setq reomacs/treesit-load-paths-cached
+                (->> (-concat
+                      (list "/run/current-system/sw/lib/"
+                            "/run/current-system/sw/lib/tree-sitter/")
+                      (--map (expand-file-name "lib/" it)
+                             (directory-files "/nix/store/" t "emacs-treesit-grammars$")))
+                     (-filter #'file-directory-p)))))
+
+    (setq treesit-extra-load-path (reomacs/treesit--discover-load-paths))
+
+    (defun reomacs/treesit--grammar-available-p (lang)
+      "Check if grammar for LANG is available."
+      (or (treesit-language-available-p lang)
+          (ignore-errors (treesit-language-available-p lang t))))
+
+    (defun reomacs/treesit--build-remap-alist ()
+      "Build remap alist only for languages with available grammars."
+      (->> '((bash sh) c c++ cmake css dockerfile go html java
+             (javascript js js2) json lua nix python ruby rust toml tsx typescript yaml)
+           (--mapcat (let* ((modes (if (listp it) it (list it)))
+                            (lang (-first-item modes))
+                            (ts-mode (intern (format "%s-ts-mode" lang))))
+                       (when (reomacs/treesit--grammar-available-p lang)
+                         (--map (cons (intern (format "%s-mode" it)) ts-mode) modes))))))
+
+    (setq major-mode-remap-alist (reomacs/treesit--build-remap-alist))
+
+    ;; Rebuild remaps after init in case grammars load lazily
+    (add-hook 'after-init-hook
+              (lambda ()
+                (setq major-mode-remap-alist (reomacs/treesit--build-remap-alist))))
 
     ;; Treesit font-lock level (3=balanced, 4=maximum - level 4 can be slow)
     (setq treesit-font-lock-level 3))
