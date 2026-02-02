@@ -643,8 +643,8 @@ Skips display-touching initialization on reload to avoid PGTK crashes."
     :custom
     ;; Auto-completion (toggleable via reomacs/corfu-toggle-auto)
     (corfu-auto t)
-    (corfu-auto-delay 0)
-    (corfu-auto-prefix 1)
+    (corfu-auto-delay 0.1)
+    (corfu-auto-prefix 2)
 
     ;; Neovim-like behavior: NO preview insertion, just visual ghost text
     (corfu-preview-current nil)      ; Disable preview (prevents any insertion)
