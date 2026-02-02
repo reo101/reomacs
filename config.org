@@ -2144,6 +2144,12 @@ Native heirline-inspired mode-line.
 ** File Block
 
 #+begin_src emacs-lisp
+  (defun reomodeline--make-click-map (action)
+    (let ((map (make-sparse-keymap)))
+      (define-key map [mode-line mouse-1] action)
+      (define-key map [mode-line mouse-2] action)
+      map))
+
   (defun reomodeline-file-icon ()
     (when (and (display-graphic-p) (featurep 'nerd-icons))
       (concat (if buffer-file-name (nerd-icons-icon-for-file buffer-file-name)
@@ -2153,7 +2159,10 @@ Native heirline-inspired mode-line.
     (propertize (if buffer-file-name (file-name-nondirectory buffer-file-name) (buffer-name))
                 'face (cond (buffer-read-only 'font-lock-constant-face)
                             ((buffer-modified-p) `(:foreground ,(reomodeline-color 'orange) :weight bold))
-                            (t 'font-lock-keyword-face))))
+                            (t 'font-lock-keyword-face))
+                'mouse-face 'mode-line-highlight
+                'help-echo "mouse-1: switch buffer"
+                'local-map (reomodeline--make-click-map #'consult-buffer)))
 
   (defun reomodeline-file-flags ()
     (concat (when buffer-read-only (propertize "" 'face `(:foreground ,(reomodeline-color 'green))))
@@ -2195,7 +2204,11 @@ Native heirline-inspired mode-line.
   (defun reomodeline--vcs-bubble (text)
     (concat (propertize "" 'face '(:foreground "#FF8800"))
             (propertize "" 'face '(:foreground "#FF8800" :background "#ffff66"))
-            (propertize (concat " " text " ") 'face '(:foreground "#000000" :background "#ffff66" :weight bold))
+            (propertize (concat " " text " ")
+                        'face '(:foreground "#000000" :background "#ffff66" :weight bold)
+                        'mouse-face 'mode-line-highlight
+                        'help-echo "mouse-1: open VC status"
+                        'local-map (reomodeline--make-click-map #'magit-status))
             (propertize "" 'face '(:foreground "#ffff66"))))
 
   (defun reomodeline-jj ()
