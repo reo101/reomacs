@@ -292,7 +292,11 @@ Skips display-touching initialization on reload to avoid PGTK crashes."
       (dash-register-info-lookup)))
 #+end_src
 
-** Tree-sitter
+** Tree-sitter (built-in treesit)
+
+Emacs 29+ includes native tree-sitter support via the `treesit` module. This
+provides fast syntax highlighting, indentation, and structural navigation via
+*-ts-mode variants (python-ts-mode, rust-ts-mode, etc).
 
 #+begin_src emacs-lisp
   ;; NixOS provides grammars via treesit-grammars.with-all-grammars
@@ -410,6 +414,141 @@ Skips display-touching initialization on reload to avoid PGTK crashes."
     ;; other faces such as `diff-added` will be used for other actions
     (evil-goggles-use-diff-faces)
     (setopt evil-goggles-duration 0.100))
+
+  ;; Surround text objects (like nvim-surround: ys, ds, cs)
+  (use-package evil-surround
+    :after evil
+    :config
+    (global-evil-surround-mode 1))
+
+  ;; Motion jumping (like leap.nvim)
+  (use-package avy
+    :config
+    (setopt avy-case-fold-search t)
+    (setopt avy-all-windows t)
+    (setopt avy-background t)
+    :bind
+    (:map evil-normal-state-map
+     ("s" . avy-goto-char-2)
+     ("S" . avy-goto-line))
+    (:map evil-visual-state-map
+     ("s" . avy-goto-char-2)
+     ("S" . avy-goto-line))
+    (:map evil-operator-state-map
+    ("s" . avy-goto-char-2)))
+
+  ;; Tree-sitter text objects (af/if, aC/iC, ar/ir, etc)
+  ;; Note: evil-textobj-tree-sitter now supports both legacy tree-sitter.el
+  ;; AND built-in treesit (Emacs 29+). It auto-detects which API to use.
+  ;; We only load it after evil and rely on built-in treesit (no legacy pkg).
+  (use-package evil-textobj-tree-sitter
+    :straight (evil-textobj-tree-sitter
+               :type git
+               :host github
+               :repo "meain/evil-textobj-tree-sitter"
+               :files (:defaults "queries" "treesit-queries"))
+    :after evil
+    :init
+    ;; CRITICAL: Prevent "void variable" error for legacy tree-sitter.el
+    ;; The package declares this var but doesn't initialize it. We must bind
+    ;; it to nil before loading to avoid "Symbol's value as variable is void".
+    (defvar tree-sitter-tree nil)
+    ;; Also ensure the elisp-tree-sitter flag is nil (no legacy package)
+    (defvar evil-textobj-tree-sitter--can-use-elisp-treesitter nil)
+    :config
+    ;; Patch: Force treesit-only mode when elisp-tree-sitter is unavailable.
+    ;; The original logic falls back to elisp backend in non-ts-mode buffers,
+    ;; which fails when tree-sitter.el isn't installed.
+    (advice-add 'evil-textobj-tree-sitter--use-builtin-treesitter
+                :override (lambda ()
+                            (and evil-textobj-tree-sitter--can-use-builtin-treesit
+                                 (or (string-suffix-p "-ts-mode" (symbol-name major-mode))
+                                     ;; Default to treesit for all modes when no legacy pkg
+                                     (not evil-textobj-tree-sitter--can-use-elisp-treesitter)
+                                     (and (bound-and-true-p rust-mode-treesitter-derive)
+                                          (derived-mode-p 'rust-mode))))))
+    ;; Silently handle "No available parser" errors instead of erroring.
+    ;; This happens when using text objects in buffers without tree-sitter support.
+    (advice-add 'evil-textobj-tree-sitter--treesit-get-nodes
+                :around (lambda (orig-fun &rest args)
+                          (condition-case err
+                              (apply orig-fun args)
+                            (error
+                             (if (string-match-p "No available parser" (error-message-string err))
+                                 ;; Silently ignore - no parser for this buffer
+                                 nil
+                               ;; Re-signal other errors
+                               (signal (car err) (cdr err)))))))
+    ;; Function text objects (af/if)
+    (define-key evil-outer-text-objects-map "f"
+      (cons "function" (evil-textobj-tree-sitter-get-textobj "function.outer")))
+    (define-key evil-inner-text-objects-map "f"
+      (cons "function" (evil-textobj-tree-sitter-get-textobj "function.inner")))
+
+    ;; Class text objects (aC/iC)
+    (define-key evil-outer-text-objects-map "C"
+      (cons "class" (evil-textobj-tree-sitter-get-textobj "class.outer")))
+    (define-key evil-inner-text-objects-map "C"
+      (cons "class" (evil-textobj-tree-sitter-get-textobj "class.inner")))
+
+    ;; Parameter/argument text objects (ar/ir)
+    (define-key evil-outer-text-objects-map "r"
+      (cons "parameter" (evil-textobj-tree-sitter-get-textobj "parameter.outer")))
+    (define-key evil-inner-text-objects-map "r"
+      (cons "parameter" (evil-textobj-tree-sitter-get-textobj "parameter.inner")))
+
+    ;; Call/invocation text objects (am/im)
+    (define-key evil-outer-text-objects-map "m"
+      (cons "call" (evil-textobj-tree-sitter-get-textobj "call.outer")))
+    (define-key evil-inner-text-objects-map "m"
+      (cons "call" (evil-textobj-tree-sitter-get-textobj "call.inner")))
+
+    ;; Conditional text objects (ac/ic)
+    (define-key evil-outer-text-objects-map "c"
+      (cons "conditional" (evil-textobj-tree-sitter-get-textobj "conditional.outer")))
+    (define-key evil-inner-text-objects-map "c"
+      (cons "conditional" (evil-textobj-tree-sitter-get-textobj "conditional.inner")))
+
+    ;; Loop text objects (al/il)
+    (define-key evil-outer-text-objects-map "l"
+      (cons "loop" (evil-textobj-tree-sitter-get-textobj "loop.outer")))
+    (define-key evil-inner-text-objects-map "l"
+      (cons "loop" (evil-textobj-tree-sitter-get-textobj "loop.inner")))
+
+    ;; Block text objects (ae/ie)
+    (define-key evil-outer-text-objects-map "e"
+      (cons "block" (evil-textobj-tree-sitter-get-textobj "block.outer")))
+    (define-key evil-inner-text-objects-map "e"
+      (cons "block" (evil-textobj-tree-sitter-get-textobj "block.inner")))
+
+    ;; Comment text objects (ad only - no inner)
+    (define-key evil-outer-text-objects-map "d"
+      (cons "comment" (evil-textobj-tree-sitter-get-textobj "comment.outer")))
+
+    ;; Statement text objects (as/is)
+    (define-key evil-outer-text-objects-map "s"
+      (cons "statement" (evil-textobj-tree-sitter-get-textobj "statement.outer")))
+    (define-key evil-inner-text-objects-map "s"
+      (cons "statement" (evil-textobj-tree-sitter-get-textobj "statement.inner")))
+
+    ;; Movement keybindings (like nvim ]m/[m etc)
+    (define-key evil-normal-state-map (kbd "]m")
+      (evil-textobj-tree-sitter-goto-textobj "function.outer"))
+    (define-key evil-normal-state-map (kbd "[m")
+      (evil-textobj-tree-sitter-goto-textobj "function.outer" t))
+    (define-key evil-normal-state-map (kbd "]M")
+      (evil-textobj-tree-sitter-goto-textobj "function.outer" nil t))
+    (define-key evil-normal-state-map (kbd "[M")
+      (evil-textobj-tree-sitter-goto-textobj "function.outer" t t))
+
+    (define-key evil-normal-state-map (kbd "]]")
+      (evil-textobj-tree-sitter-goto-textobj "class.outer"))
+    (define-key evil-normal-state-map (kbd "[[")
+      (evil-textobj-tree-sitter-goto-textobj "class.outer" t))
+    (define-key evil-normal-state-map (kbd "][")
+      (evil-textobj-tree-sitter-goto-textobj "class.outer" nil t))
+    (define-key evil-normal-state-map (kbd "[]")
+      (evil-textobj-tree-sitter-goto-textobj "class.outer" t t)))
 #+end_src
 
 *** Meow
