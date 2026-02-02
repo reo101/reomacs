@@ -709,10 +709,97 @@ provides fast syntax highlighting, indentation, and structural navigation via
 * Lisp
 
 #+begin_src emacs-lisp
-  ;;(use-package parinfer-rust-mode
-  ;;  :init
-  ;;  (setopt parinfer-rust-auto-download nil)
-  ;;  :hook emacs-lisp-mode)
+  (defvar reomacs/lisp-modes
+    '(emacs-lisp lisp scheme clojure fennel)
+    "Base names of Lisp major modes (without -mode suffix).")
+
+  (defun reomacs/lisp-mode-symbols ()
+    "Return list of mode symbols for `reomacs/lisp-modes'."
+    (--map (intern (format "%s-mode" it)) reomacs/lisp-modes))
+
+  (defun reomacs/lisp-mode-hooks ()
+    "Return list of mode hooks for `reomacs/lisp-modes'."
+    (--map (intern (format "%s-mode-hook" it)) reomacs/lisp-modes))
+
+  (defun reomacs/lisp-mode-p ()
+    "Return non-nil if current buffer is a lisp mode."
+    (apply #'derived-mode-p (reomacs/lisp-mode-symbols)))
+#+end_src
+
+** Puni (structural editing)
+
+#+begin_src emacs-lisp
+  (use-package puni
+    :defer t
+    :init
+    (define-globalized-minor-mode reomacs/puni-lisp-mode puni-mode
+      (lambda () (when (reomacs/lisp-mode-p) (puni-mode 1))))
+    (reomacs/puni-lisp-mode 1)
+    :config
+    ;; Nvim-paredit style keybindings
+    (with-eval-after-load 'evil
+      ;; Slurp/barf (like nvim-paredit >)/<) etc)
+      (evil-define-key 'normal puni-mode-map
+        (kbd ">)") #'puni-slurp-forward
+        (kbd "<)") #'puni-barf-forward
+        (kbd ">(") #'puni-barf-backward
+        (kbd "<(") #'puni-slurp-backward
+
+        ;; Raise/splice (like <localleader>o and <localleader>@)
+        (kbd "<localleader>o") #'puni-raise
+        (kbd "<localleader>@") #'puni-splice
+
+        ;; Navigation (like nvim-paredit W/B/E/gE)
+        (kbd "W") #'puni-forward-sexp
+        (kbd "B") #'puni-backward-sexp
+        (kbd "E") #'puni-end-of-sexp
+        (kbd "(") #'puni-beginning-of-sexp
+        (kbd ")") #'puni-end-of-sexp)
+
+      ;; Element dragging (like >e/<e in nvim-paredit)
+      (evil-define-key 'normal puni-mode-map
+        (kbd ">e") #'puni-transpose-forward
+        (kbd "<e") #'puni-transpose-backward)
+
+      ;; Text objects (like ao/io in nvim-paredit)
+      (evil-define-key 'visual puni-mode-map
+        (kbd "ao") #'puni-mark-sexp-around
+        (kbd "io") #'puni-mark-sexp-at-point)
+      (evil-define-key 'operator puni-mode-map
+        (kbd "ao") #'puni-mark-sexp-around
+        (kbd "io") #'puni-mark-sexp-at-point)
+
+      ;; Soft delete (structural backspace/delete)
+      (evil-define-key 'insert puni-mode-map
+        (kbd "DEL") #'puni-backward-delete-char
+        (kbd "C-d") #'puni-forward-delete-char
+        (kbd "C-k") #'puni-kill-line
+        (kbd "C-w") #'puni-backward-kill-word)))
+
+  ;; Wrap commands (mirroring vim-sexp / vim-paredit easy mappings)
+  (defun reomacs/puni-wrap-round () (interactive) (puni-wrap-round 1 1))
+  (defun reomacs/puni-wrap-square () (interactive) (puni-wrap-square 1 1))
+  (defun reomacs/puni-wrap-curly () (interactive) (puni-wrap-curly 1 1))
+
+  (with-eval-after-load 'evil
+    (with-eval-after-load 'puni
+      (evil-define-key 'normal puni-mode-map
+        (kbd "<localleader>(") #'reomacs/puni-wrap-round
+        (kbd "<localleader>[") #'reomacs/puni-wrap-square
+        (kbd "<localleader>{") #'reomacs/puni-wrap-curly)))
+#+end_src
+
+** Parinfer
+
+#+begin_src emacs-lisp
+  (comment
+   (use-package parinfer-rust-mode
+     :defer t
+     :init
+     (setopt parinfer-rust-auto-download nil)
+     (define-globalized-minor-mode reomacs/parinfer-lisp-mode parinfer-rust-mode
+       (lambda () (when (reomacs/lisp-mode-p) (parinfer-rust-mode 1))))
+     (reomacs/parinfer-lisp-mode 1)))
 #+end_src
 
 * Completions
