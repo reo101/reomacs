@@ -541,18 +541,16 @@ provides fast syntax highlighting, indentation, and structural navigation via
                                      (not evil-textobj-tree-sitter--can-use-elisp-treesitter)
                                      (and (bound-and-true-p rust-mode-treesitter-derive)
                                           (derived-mode-p 'rust-mode))))))
-    ;; Silently handle "No available parser" errors instead of erroring.
-    ;; This happens when using text objects in buffers without tree-sitter support.
-    (advice-add 'evil-textobj-tree-sitter--treesit-get-nodes
-                :around (lambda (orig-fun &rest args)
-                          (condition-case err
-                              (apply orig-fun args)
-                            (error
-                             (if (string-match-p "No available parser" (error-message-string err))
-                                 ;; Silently ignore - no parser for this buffer
-                                 nil
-                               ;; Re-signal other errors
-                               (signal (car err) (cdr err)))))))
+    ;; Advise to silently handle missing queries/parsers during init and runtime
+    (defun reomacs/ts-silence-errors (orig-fun &rest args)
+      "Wrap ORIG-FUN to return nil on tree-sitter errors."
+      (condition-case nil
+          (apply orig-fun args)
+        (error nil)))
+
+    (advice-add 'evil-textobj-tree-sitter-get-textobj :around #'reomacs/ts-silence-errors)
+    (advice-add 'evil-textobj-tree-sitter-goto-textobj :around #'reomacs/ts-silence-errors)
+
     ;; Function text objects (af/if)
     (define-key evil-outer-text-objects-map "f"
       (cons "function" (evil-textobj-tree-sitter-get-textobj "function.outer")))
