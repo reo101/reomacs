@@ -2395,6 +2395,25 @@ Native heirline-inspired mode-line.
       (diag-error . "#ff5555") (diag-warn . "#ffb86c") (diag-info . "#8be9fd") (diag-hint . "#50fa7b")))
 
   (defun reomodeline-color (name) (alist-get name reomodeline-colors))
+
+  ;; Pre-allocated keymaps (avoid per-render allocation)
+  (defvar reomodeline--buffer-click-map
+    (let ((map (make-sparse-keymap)))
+      (define-key map [mode-line mouse-1] #'consult-buffer)
+      (define-key map [mode-line mouse-2] #'consult-buffer)
+      map))
+
+  (defvar reomodeline--vcs-click-map
+    (let ((map (make-sparse-keymap)))
+      (define-key map [mode-line mouse-1] #'magit-status)
+      (define-key map [mode-line mouse-2] #'magit-status)
+      map))
+
+  ;; Type coercion helper
+  (defun reomodeline--id->string (x)
+    (cond ((stringp x) x)
+          ((symbolp x) (symbol-name x))
+          (t (format "%s" x))))
 #+end_src
 
 ** Vi Mode
