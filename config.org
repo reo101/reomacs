@@ -2710,18 +2710,21 @@ Native heirline-inspired mode-line.
     (when (bound-and-true-p flyspell-mode)
       (propertize "SPELL " 'face `(:foreground ,(reomodeline-color 'orange) :weight bold))))
 
+  ;; Use format-mode-line for efficient ruler (avoids expensive line counting)
   (defun reomodeline-ruler ()
-    (format "%4d/%d:%2d %s" (line-number-at-pos) (line-number-at-pos (point-max)) (current-column)
-            (cond ((= (window-start) (point-min)) "Top")
-                  ((= (window-end) (point-max)) "Bot")
-                  (t (format "%2d%%%%" (/ (* 100 (window-start)) (max 1 (point-max))))))))
+    (format-mode-line "%4l/%L:%2c %p"))
 
   (defvar reomodeline-scrollbar-chars '("█" "▇" "▆" "▅" "▄" "▃" "▂" "▁"))
 
+  ;; Derive scrollbar from percent position to avoid line counting
   (defun reomodeline-scrollbar ()
-    (let* ((line (line-number-at-pos)) (lines (max 1 (line-number-at-pos (point-max))))
+    (let* ((pct-str (format-mode-line "%p"))
+           (pct (cond ((string= pct-str "Top") 0)
+                      ((string= pct-str "Bot") 100)
+                      ((string= pct-str "All") 50)
+                      (t (string-to-number pct-str))))
            (idx (min (1- (length reomodeline-scrollbar-chars))
-                     (floor (* (/ (float line) lines) (length reomodeline-scrollbar-chars)))))
+                     (floor (* (/ pct 100.0) (length reomodeline-scrollbar-chars)))))
            (char (nth idx reomodeline-scrollbar-chars)))
       (propertize (concat char char) 'face `(:foreground ,(reomodeline-color 'cyan)))))
 #+end_src
