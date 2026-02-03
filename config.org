@@ -2365,7 +2365,13 @@ LSP config:
 #+begin_src emacs-lisp
   (use-package anki-editor
     ;; :vc (:url "https://github.com/anki-editor/anki-editor" :rev :newest)
-    :straight (:host github :repo "anki-editor/anki-editor"))
+    :straight (:host github :repo "anki-editor/anki-editor")
+    :defer t
+    :init
+    ;; anki-editor requires org-latex-preview (Org 9.7+/Emacs 30+)
+    ;; Provide a stub if unavailable to prevent load failure
+    (unless (featurep 'org-latex-preview)
+      (provide 'org-latex-preview)))
 #+end_src
 
 * Reomodeline
