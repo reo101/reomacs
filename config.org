@@ -202,6 +202,43 @@ Skips display-touching initialization on reload to avoid PGTK crashes."
   (add-hook 'prog-mode-hook #'whitespace-mode)
 #+end_src
 
+** Nix-managed binaries
+
+Add binaries from nix flakes to Emacs' exec-path.
+These are fetched and built by nix, then added to the PATH.
+
+#+begin_src emacs-lisp
+  (defun reomacs/nix-add-to-path (flake-ref package-path &optional callback)
+    "Add a nix package binary directory to exec-path asynchronously.
+  FLAKE-REF is the flake reference (e.g., 'github:numtide/nix-ai-tools').
+  PACKAGE-PATH is the attribute path within the flake (e.g., 'codex-acp').
+  CALLBACK is called with the store path on success, nil on failure."
+    (let* ((installable (format "%s#%s" flake-ref package-path))
+           (cmd (format "nix build %s --no-link --print-out-paths" installable))
+           (buf (generate-new-buffer " *nix-add-to-path*")))
+      (make-process
+       :name "nix-add-to-path"
+       :buffer buf
+       :command (list "sh" "-c" cmd)
+       :noquery t
+       :sentinel
+       (lambda (proc _event)
+         (when (memq (process-status proc) '(exit signal))
+           (unwind-protect
+               (when (= (process-exit-status proc) 0)
+                 (let* ((store-path (with-current-buffer (process-buffer proc)
+                                      (string-trim (buffer-string))))
+                        (bin-path (expand-file-name "bin" store-path)))
+                   (when (and (not (string-empty-p store-path))
+                              (file-directory-p bin-path))
+                     (add-to-list 'exec-path bin-path)
+                     (setenv "PATH" (concat bin-path ":" (getenv "PATH")))
+                     (message "Added %s to PATH" store-path)
+                     (when callback (funcall callback store-path)))))
+             (when (buffer-live-p (process-buffer proc))
+               (kill-buffer (process-buffer proc)))))))))
+#+end_src
+
 ** Package Manager (straight)
 
 #+begin_src emacs-lisp
