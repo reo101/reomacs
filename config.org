@@ -2543,30 +2543,62 @@ Native heirline-inspired mode-line.
 
 #+begin_src emacs-lisp
   (defvar-local reomodeline--jj-info nil)
+  (defvar-local reomodeline--jj-root nil)
+  (defvar-local reomodeline--jj-proc nil)
+  (defvar-local reomodeline--jj-timer nil)
 
-  (defun reomodeline-update-jj (&rest _)
-    "Update jujutsu state asynchronously."
-    (when-let* ((dir (or (and buffer-file-name (file-name-directory buffer-file-name)) default-directory))
-                (root (locate-dominating-file dir ".jj")))
+  (defun reomodeline--jj-root ()
+    "Get cached jj root, or detect it (skipping remote buffers)."
+    (or reomodeline--jj-root
+        (setq reomodeline--jj-root
+              (and (not (file-remote-p default-directory))
+                   (locate-dominating-file default-directory ".jj")))))
+
+  (defun reomodeline--jj-start-process ()
+    "Start async jj process to get current change id."
+    (when-let ((root (reomodeline--jj-root)))
+      ;; Cancel any existing process
+      (when (process-live-p reomodeline--jj-proc)
+        (delete-process reomodeline--jj-proc))
       (let* ((default-directory root)
              (buf (current-buffer))
              (proc-buf (generate-new-buffer " *reomodeline-jj*")))
-        (make-process
-         :name "reomodeline-jj" :buffer proc-buf :noquery t
-         :command '("jj" "log" "-r" "@" "--no-graph" "-T" "change_id.short(8)")
-         :sentinel (lambda (proc _event)
-                     (when (eq (process-status proc) 'exit)
-                       (let ((output (with-current-buffer (process-buffer proc)
-                                       (string-trim (buffer-string)))))
-                         (kill-buffer (process-buffer proc))
-                         (when (and (= (process-exit-status proc) 0)
-                                    (buffer-live-p buf))
+        (setq reomodeline--jj-proc
+              (make-process
+               :name "reomodeline-jj" :buffer proc-buf :noquery t
+               :command '("jj" "log" "-r" "@" "--no-graph" "-T" "change_id.short(8)")
+               :sentinel
+               (lambda (proc _event)
+                 (when (memq (process-status proc) '(exit signal))
+                   (unwind-protect
+                       (when (and (= (process-exit-status proc) 0)
+                                  (buffer-live-p buf))
+                         (let ((output (with-current-buffer (process-buffer proc)
+                                         (string-trim (buffer-string)))))
                            (with-current-buffer buf
-                             (setq reomodeline--jj-info output)
-                             (force-mode-line-update))))))))))
+                             (setq reomodeline--jj-info
+                                   (unless (string-empty-p output) output))
+                             (force-mode-line-update))))
+                     (when (buffer-live-p (process-buffer proc))
+                       (kill-buffer (process-buffer proc)))))))))))
+
+  (defun reomodeline-update-jj (&rest _)
+    "Debounced async jj update."
+    (when reomodeline--jj-timer
+      (cancel-timer reomodeline--jj-timer))
+    (setq reomodeline--jj-timer
+          (run-with-idle-timer 0.2 nil #'reomodeline--jj-start-process)))
+
+  (defun reomodeline--jj-cleanup ()
+    "Clean up jj process and timer on buffer kill."
+    (when (process-live-p reomodeline--jj-proc)
+      (delete-process reomodeline--jj-proc))
+    (when reomodeline--jj-timer
+      (cancel-timer reomodeline--jj-timer)))
 
   (add-hook 'find-file-hook #'reomodeline-update-jj)
   (add-hook 'after-save-hook #'reomodeline-update-jj)
+  (add-hook 'kill-buffer-hook #'reomodeline--jj-cleanup)
 
   (defun reomodeline--vcs-bubble (text)
     (concat (propertize "" 'face '(:foreground "#FF8800"))
@@ -2575,7 +2607,7 @@ Native heirline-inspired mode-line.
                         'face '(:foreground "#000000" :background "#ffff66" :weight bold)
                         'mouse-face 'mode-line-highlight
                         'help-echo "mouse-1: open VC status"
-                        'local-map (reomodeline--make-click-map #'magit-status))
+                        'local-map reomodeline--vcs-click-map)
             (propertize "" 'face '(:foreground "#ffff66"))))
 
   (defun reomodeline-jj ()
