@@ -152,11 +152,10 @@ Skips display-touching initialization on reload to avoid PGTK crashes."
         (menu-bar-mode -1)
         (scroll-bar-mode -1))))
 
-  ;; Run immediately for the first frame
-  (reomacs/setup-frame-ui (selected-frame))
-
-  ;; Run for any new frames created (e.g. from emacsclient -c)
-  (add-hook 'after-make-frame-functions #'reomacs/setup-frame-ui)
+  ;; Only run frame UI setup on initial load (not reload)
+  (unless reomacs/config-loaded-p
+    (reomacs/setup-frame-ui (selected-frame))
+    (add-hook 'after-make-frame-functions #'reomacs/setup-frame-ui))
 
   ;; Scrolling handled by ultra-scroll, don't set conflicting values
   ;; (setopt scroll-step 1)
@@ -169,15 +168,16 @@ Skips display-touching initialization on reload to avoid PGTK crashes."
   ;; Note: ultra-scroll controls pixel-scroll-precision internally
   (setopt pixel-scroll-precision-use-momentum t)
 
-  ;; Fonts
-  (when (member "FiraCode Nerd Font" (font-family-list))
-    (set-face-attribute 'default nil :font "FiraCode Nerd Font" :height 108)
-    (set-face-attribute 'fixed-pitch nil :font "FiraCode Nerd Font"))
-  ;; FiraCode has no italic variant - use Iosevka Nerd Font for italics
-  (when (member "Iosevka Nerd Font" (font-family-list))
-    (set-face-attribute 'italic nil
-                        :family "Iosevka Nerd Font"
-                        :slant 'italic))
+  ;; Fonts (only on initial load to avoid PGTK daemon issues)
+  (unless reomacs/config-loaded-p
+    (when (member "FiraCode Nerd Font" (font-family-list))
+      (set-face-attribute 'default nil :font "FiraCode Nerd Font" :height 108)
+      (set-face-attribute 'fixed-pitch nil :font "FiraCode Nerd Font"))
+    ;; FiraCode has no italic variant - use Iosevka Nerd Font for italics
+    (when (member "Iosevka Nerd Font" (font-family-list))
+      (set-face-attribute 'italic nil
+                          :family "Iosevka Nerd Font"
+                          :slant 'italic)))
 
   ;; Indentation
   ;; Always use spaces instead of tabs
