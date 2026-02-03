@@ -2508,16 +2508,17 @@ Native heirline-inspired mode-line.
 ** File Block
 
 #+begin_src emacs-lisp
-  (defun reomodeline--make-click-map (action)
-    (let ((map (make-sparse-keymap)))
-      (define-key map [mode-line mouse-1] action)
-      (define-key map [mode-line mouse-2] action)
-      map))
+  ;; Cache file icon per buffer (nerd-icons lookup is non-trivial)
+  (defvar-local reomodeline--file-icon-cache nil)
 
   (defun reomodeline-file-icon ()
     (when (and (display-graphic-p) (featurep 'nerd-icons))
-      (concat (if buffer-file-name (nerd-icons-icon-for-file buffer-file-name)
-                (nerd-icons-icon-for-mode major-mode)) " ")))
+      (or reomodeline--file-icon-cache
+          (setq reomodeline--file-icon-cache
+                (concat (if buffer-file-name
+                            (nerd-icons-icon-for-file buffer-file-name)
+                          (nerd-icons-icon-for-mode major-mode))
+                        " ")))))
 
   (defun reomodeline-filename ()
     (propertize (if buffer-file-name (file-name-nondirectory buffer-file-name) (buffer-name))
@@ -2526,11 +2527,13 @@ Native heirline-inspired mode-line.
                             (t 'font-lock-keyword-face))
                 'mouse-face 'mode-line-highlight
                 'help-echo "mouse-1: switch buffer"
-                'local-map (reomodeline--make-click-map #'consult-buffer)))
+                'local-map reomodeline--buffer-click-map))
 
   (defun reomodeline-file-flags ()
-    (concat (when buffer-read-only (propertize "" 'face `(:foreground ,(reomodeline-color 'green))))
-            (when (buffer-modified-p) (propertize "[+]" 'face `(:foreground ,(reomodeline-color 'orange))))))
+    (concat
+     (when buffer-read-only (propertize " " 'face `(:foreground ,(reomodeline-color 'green))))
+     (when (buffer-modified-p) (propertize " [+]" 'face `(:foreground ,(reomodeline-color 'orange))))
+     (when (buffer-narrowed-p) (propertize " ⊜" 'face `(:foreground ,(reomodeline-color 'purple))))))
 
   (defun reomodeline-file-block ()
     (concat (or (reomodeline-file-icon) "") (reomodeline-filename) (reomodeline-file-flags)))
