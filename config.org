@@ -2077,8 +2077,8 @@ function. If any files were created by this advice, it then calls
       ;; We do this first to avoid issues with modifying the buffer while iterating over it.
       (let ((new-entries '()))
         (while (not (eobp))
-          (let ((line-start (point-at-bol))
-                (line-end (point-at-eol)))
+          (let ((line-start (line-beginning-position))
+                (line-end (line-end-position)))
             ;; A line for a new file won't have the 'dired-filename' property.
             (unless (get-text-property line-start 'dired-filename)
               (let ((filename (string-trim (buffer-substring-no-properties line-start line-end))))
