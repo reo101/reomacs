@@ -2165,7 +2165,7 @@ function. If any files were created by this advice, it then calls
     (nameless-private-prefix t))
 #+end_src
 
-* LLM (gptel)
+* LLMs
 
 ** gptel
 
@@ -2199,6 +2199,27 @@ function. If any files were created by this advice, it then calls
     (gptel-agent-update)
     :bind
     ("C-c a" . gptel-agent))
+#+end_src
+
+** agent-shell
+
+From [[https://github.com/xenodium/agent-shell][agent-shell]]
+
+#+begin_src emacs-lisp
+  (use-package agent-shell
+    :straight (:host github :repo "xenodium/agent-shell")
+    :ensure-system-package
+    ;; Add agent installation configs here
+    ;; ((claude . "brew install claude-code")
+    ;;  (claude-code-acp . "npm install -g @zed-industries/claude-code-acp"))
+    ()
+    :defer t
+    :config
+    ;; Only run nix build on first load (not reload) to avoid blocking
+    (unless reomacs/config-loaded-p
+      (reomacs/nix-add-to-path "github:numtide/nix-ai-tools" "codex-acp"))
+    (setq agent-shell-openai-authentication
+      (agent-shell-openai-make-authentication :login t)))
 #+end_src
 
 * LSP
