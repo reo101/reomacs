@@ -2742,6 +2742,16 @@ Native heirline-inspired mode-line.
 
   (setq-default mode-line-format
                 '("%e" (:eval (reomodeline-left)) mode-line-format-right-align (:eval (reomodeline-right))))
+
+  ;; Apply to existing buffers (e.g., *Warnings* created before modeline setup)
+  (defun reomodeline-apply-to-all-buffers ()
+    "Set reomodeline in all buffers that don't have a custom mode-line."
+    (dolist (buf (buffer-list))
+      (with-current-buffer buf
+        (unless (local-variable-p 'mode-line-format)
+          (setq mode-line-format (default-value 'mode-line-format))))))
+
+  (add-hook 'reomacs/post-init-hooks #'reomodeline-apply-to-all-buffers)
 #+end_src
 
 ** Evil State Hooks
