@@ -2560,3 +2560,121 @@ Native heirline-inspired mode-line.
                                 evil-operator-state-entry-hook evil-emacs-state-entry-hook))
                   (add-hook hook #'force-mode-line-update)))))
 #+end_src
+
+* TRAMP
+:PROPERTIES:
+:header-args:emacs-lisp: :tangle config.el :lexical t
+:END:
+
+From [[https://coredumped.dev/2025/06/18/making-tramp-go-brrrr.][Making TRAMP go Brrrr…]].
+
+** Basic Settings
+
+#+begin_src emacs-lisp
+  ;; Prevent TRAMP from creating extra files and use scp directly when moving files
+  (setq remote-file-name-inhibit-locks t
+        tramp-use-scp-direct-remote-copying t
+        remote-file-name-inhibit-auto-save-visited t
+        tramp-verbose 1
+        tramp-ssh-controlmaster-options nil
+        tramp-remote-shell "/bin/sh"
+        tramp-ssh-controlmaster-options "-o ControlMaster=auto -o ControlPersist=no"
+        tramp-use-ssh-controlmaster-options nil)
+#+end_src
+
+** Copy Size Limit
+
+Inline transfer is faster for files up to ~2MB. Default is 10KB.
+
+#+begin_src emacs-lisp
+  (setq tramp-copy-size-limit (* 1024 1024)  ;; 1MB
+        tramp-verbose 2)
+#+end_src
+
+** Direct Async Process
+
+Makes async processes (magit, git-gutter) significantly faster over TRAMP.
+
+#+begin_src emacs-lisp
+  (when (>= (string-to-number (substring emacs-version 0 (string-match "\\." emacs-version 1))) 29)
+    (connection-local-set-profile-variables
+     'remote-direct-async-process
+     '((tramp-direct-async-process . t)))
+    (connection-local-set-profiles
+     '(:application tramp :protocol "rsync")
+     'remote-direct-async-process))
+
+  ;; Required for magit to work with direct async process
+  (setq magit-tramp-pipe-stty-settings 'pty)
+#+end_src
+
+** Fix Remote Compile
+
+Ensure SSH connection sharing is used for faster connections.
+
+#+begin_src emacs-lisp
+  (with-eval-after-load 'tramp
+    (with-eval-after-load 'compile
+      (remove-hook 'compilation-mode-hook #'tramp-compile-disable-ssh-controlmaster-options)))
+#+end_src
+
+** Magit Optimizations
+
+#+begin_src emacs-lisp
+  ;; Don't show the diff by default in the commit buffer. Use `C-c C-d' to display it
+  (setq magit-commit-show-diff nil)
+  ;; Don't show git variables in magit branch
+  (setq magit-branch-direct-configure nil)
+  ;; Don't automatically refresh the status buffer after running a git command
+  (setq magit-refresh-status-buffer nil)
+#+end_src
+
+** Caching for Remote Operations
+
+Memoize expensive TRAMP operations to avoid repeated remote calls.
+
+#+begin_src emacs-lisp
+  (defun memoize-remote (key cache orig-fn &rest args)
+    "Memoize a value if the key is a remote path."
+    (if (and key (file-remote-p key))
+        (if-let ((current (assoc key (symbol-value cache))))
+            (cdr current)
+          (let ((current (apply orig-fn args)))
+            (set cache (cons (cons key current) (symbol-value cache)))
+            current))
+      (apply orig-fn args)))
+
+  ;; Memoize project-current
+  (defvar project-current-cache nil)
+  (defun memoize-project-current (orig &optional prompt directory)
+    (memoize-remote (or directory project-current-directory-override default-directory)
+                    'project-current-cache orig prompt directory))
+  (advice-add 'project-current :around #'memoize-project-current)
+
+  ;; Memoize magit-toplevel
+  (defvar magit-toplevel-cache nil)
+  (defun memoize-magit-toplevel (orig &optional directory)
+    (memoize-remote (or directory default-directory)
+                    'magit-toplevel-cache orig directory))
+  (advice-add 'magit-toplevel :around #'memoize-magit-toplevel)
+
+  ;; Memoize vc-git-root
+  (defvar vc-git-root-cache nil)
+  (defun memoize-vc-git-root (orig file)
+    (let ((value (memoize-remote (file-name-directory file)
+                                 'vc-git-root-cache orig file)))
+      ;; Sometimes vc-git-root returns nil even when there is a root there
+      (when (null (cdr (car vc-git-root-cache)))
+        (setq vc-git-root-cache (cdr vc-git-root-cache)))
+      value))
+  (advice-add 'vc-git-root :around #'memoize-vc-git-root)
+
+  ;; Reset caches when needed
+  (defun reomacs/reset-tramp-caches ()
+    "Reset all TRAMP memoization caches."
+    (interactive)
+    (setq project-current-cache nil
+          magit-toplevel-cache nil
+          vc-git-root-cache nil)
+    (message "TRAMP caches reset"))
+#+end_src
