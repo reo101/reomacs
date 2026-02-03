@@ -2624,22 +2624,57 @@ Native heirline-inspired mode-line.
 ** Diagnostics
 
 #+begin_src emacs-lisp
-  (defun reomodeline-diagnostics ()
-    (let ((e 0) (w 0) (i 0) (h 0))
-      (when (bound-and-true-p flymake-mode)
+  ;; Cache diagnostics counts (updated via hooks, not on every render)
+  (defvar-local reomodeline--diag-cache nil
+    "Plist of cached diagnostic counts: (:e N :w N :i N :h N).")
+
+  (defun reomodeline--set-diag-cache (e w i h)
+    (setq reomodeline--diag-cache (list :e e :w w :i i :h h))
+    (force-mode-line-update))
+
+  (defun reomodeline--update-flymake-diags ()
+    (when (bound-and-true-p flymake-mode)
+      (let ((e 0) (w 0) (i 0) (h 0))
         (dolist (d (flymake-diagnostics))
           (pcase (flymake-diagnostic-type d)
-            (:error (cl-incf e)) (:warning (cl-incf w)) (:note (cl-incf h)) (_ (cl-incf i)))))
-      (when (bound-and-true-p flycheck-mode)
-        (let ((c (flycheck-count-errors flycheck-current-errors)))
-          (setq e (or (alist-get 'error c) 0) w (or (alist-get 'warning c) 0) i (or (alist-get 'info c) 0))))
-      (when (> (+ e w i h) 0)
-        (concat (propertize "![" 'face `(:foreground ,(reomodeline-color 'orange)))
-                (when (> e 0) (propertize (format " %d" e) 'face `(:foreground ,(reomodeline-color 'diag-error))))
-                (when (> w 0) (propertize (format " %d" w) 'face `(:foreground ,(reomodeline-color 'diag-warn))))
-                (when (> i 0) (propertize (format " %d" i) 'face `(:foreground ,(reomodeline-color 'diag-info))))
-                (when (> h 0) (propertize (format " %d" h) 'face `(:foreground ,(reomodeline-color 'diag-hint))))
-                (propertize "]" 'face `(:foreground ,(reomodeline-color 'orange)))))))
+            (:error (cl-incf e))
+            (:warning (cl-incf w))
+            (:note (cl-incf h))
+            (_ (cl-incf i))))
+        (reomodeline--set-diag-cache e w i h))))
+
+  (defun reomodeline--update-flycheck-diags (&rest _)
+    (when (bound-and-true-p flycheck-mode)
+      (let* ((c (flycheck-count-errors flycheck-current-errors))
+             (e (or (alist-get 'error c) 0))
+             (w (or (alist-get 'warning c) 0))
+             (i (or (alist-get 'info c) 0)))
+        (reomodeline--set-diag-cache e w i 0))))
+
+  (defun reomodeline--enable-diag-hooks ()
+    ;; Flymake hooks
+    (when (boundp 'flymake-after-diagnostics-hook)
+      (add-hook 'flymake-after-diagnostics-hook #'reomodeline--update-flymake-diags nil t))
+    ;; Flycheck hooks
+    (when (boundp 'flycheck-after-syntax-check-hook)
+      (add-hook 'flycheck-after-syntax-check-hook #'reomodeline--update-flycheck-diags nil t)
+      (add-hook 'flycheck-status-changed-functions #'reomodeline--update-flycheck-diags nil t)))
+
+  (add-hook 'prog-mode-hook #'reomodeline--enable-diag-hooks)
+  (add-hook 'text-mode-hook #'reomodeline--enable-diag-hooks)
+
+  (defun reomodeline-diagnostics ()
+    "Format cached diagnostics (fast: no computation during render)."
+    (when-let* ((p reomodeline--diag-cache)
+                (e (plist-get p :e)) (w (plist-get p :w))
+                (i (plist-get p :i)) (h (plist-get p :h))
+                (_ (> (+ e w i h) 0)))
+      (concat (propertize "![" 'face `(:foreground ,(reomodeline-color 'orange)))
+              (when (> e 0) (propertize (format " %d" e) 'face `(:foreground ,(reomodeline-color 'diag-error))))
+              (when (> w 0) (propertize (format " %d" w) 'face `(:foreground ,(reomodeline-color 'diag-warn))))
+              (when (> i 0) (propertize (format " %d" i) 'face `(:foreground ,(reomodeline-color 'diag-info))))
+              (when (> h 0) (propertize (format " %d" h) 'face `(:foreground ,(reomodeline-color 'diag-hint))))
+              (propertize "]" 'face `(:foreground ,(reomodeline-color 'orange))))))
 #+end_src
 
 ** LSP
