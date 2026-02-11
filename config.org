@@ -4933,13 +4933,32 @@ From [[https://coredumped.dev/2025/06/18/making-tramp-go-brrrr.][Making TRAMP go
   (setq remote-file-name-inhibit-locks t
         tramp-use-scp-direct-remote-copying t
         remote-file-name-inhibit-auto-save-visited t
-        tramp-verbose 6
+        tramp-verbose 1
         tramp-remote-shell "/bin/sh"
-        tramp-use-ssh-controlmaster-options nil)
+        tramp-use-ssh-controlmaster-options nil
+        ;; Prevent infinite recursion on FTP paths
+        max-lisp-eval-depth 3000)
+
+  ;; Override SetEnv TERM=xterm-256color from ~/.ssh/config.
+  ;; TRAMP needs TERM=dumb so the remote shell uses a plain prompt
+  ;; that TRAMP can pattern-match; xterm-256color causes fancy/colored
+  ;; prompts that hang the connection handshake.
+  (with-eval-after-load 'tramp
+    (let ((login-args (assoc 'tramp-login-args
+                             (cdr (assoc "ssh" tramp-methods)))))
+      (when login-args
+        (setcdr login-args
+                (append (cdr login-args)
+                        '(("-o" "SetEnv=TERM=dumb")))))))
 
   ;; Fail fast on unreachable hosts instead of hanging for 30-60s.
   ;; TRAMP-level timeout (seconds to wait for connection).
   (setq tramp-connection-timeout 5)
+
+  ;; Don't search auth-sources during TRAMP completion.
+  ;; Default behaviour decrypts ~/.authinfo.gpg to list known hosts,
+  ;; which silently blocks waiting for YubiKey touch inside vertico.
+  (setq tramp-completion-use-auth-sources nil)
 #+end_src
 
 ** Copy Size Limit
@@ -5006,26 +5025,38 @@ Memoize expensive TRAMP operations to avoid repeated remote calls.
   ;; Memoize project-current
   (defvar project-current-cache nil)
   (defun memoize-project-current (orig &optional prompt directory)
-    (memoize-remote (or directory project-current-directory-override default-directory)
-                    'project-current-cache orig prompt directory))
+    (let ((dir (or directory project-current-directory-override default-directory)))
+      ;; Skip for non-git remote protocols (ftp, dav, etc)
+      (if (and (file-remote-p dir)
+               (not (string-match "^/\\(ssh\\|scp\\|sftp\\):" dir)))
+          nil  ; Return nil for non-git remotes to avoid git lookups
+        (memoize-remote dir 'project-current-cache orig prompt directory))))
   (advice-add 'project-current :around #'memoize-project-current)
 
   ;; Memoize magit-toplevel
   (defvar magit-toplevel-cache nil)
   (defun memoize-magit-toplevel (orig &optional directory)
-    (memoize-remote (or directory default-directory)
-                    'magit-toplevel-cache orig directory))
+    (let ((dir (or directory default-directory)))
+      ;; Skip for non-git remote protocols
+      (if (and (file-remote-p dir)
+               (not (string-match "^/\\(ssh\\|scp\\|sftp\\):" dir)))
+          nil
+        (memoize-remote dir 'magit-toplevel-cache orig directory))))
   (advice-add 'magit-toplevel :around #'memoize-magit-toplevel)
 
   ;; Memoize vc-git-root
   (defvar vc-git-root-cache nil)
   (defun memoize-vc-git-root (orig file)
-    (let ((value (memoize-remote (file-name-directory file)
-                                 'vc-git-root-cache orig file)))
-      ;; Sometimes vc-git-root returns nil even when there is a root there
-      (when (null (cdr (car vc-git-root-cache)))
-        (setq vc-git-root-cache (cdr vc-git-root-cache)))
-      value))
+    (let ((dir (file-name-directory file)))
+      ;; Skip for non-git remote protocols
+      (if (and (file-remote-p dir)
+               (not (string-match "^/\\(ssh\\|scp\\|sftp\\):" dir)))
+          nil
+        (let ((value (memoize-remote dir 'vc-git-root-cache orig file)))
+          ;; Sometimes vc-git-root returns nil even when there is a root there
+          (when (null (cdr (car vc-git-root-cache)))
+            (setq vc-git-root-cache (cdr vc-git-root-cache)))
+          value))))
   (advice-add 'vc-git-root :around #'memoize-vc-git-root)
 
   ;; Reset caches when needed
@@ -5038,6 +5069,23 @@ Memoize expensive TRAMP operations to avoid repeated remote calls.
     (message "TRAMP caches reset"))
 #+end_src
 
+** FTP Handling
+
+Disable unnecessary operations on FTP connections (which don't support git/vc).
+
+#+begin_src emacs-lisp
+  (with-eval-after-load 'tramp
+    ;; Disable version control lookups on FTP
+    (setq vc-handled-backends (remove 'Git vc-handled-backends)))
+
+  ;; Disable consult-buffer's version string lookup on remote FTP
+  (defun reomacs/consult-disable-remote-vc (&optional args)
+    "Disable VC in remote completions to prevent 'Version must be a string' error."
+    (when (file-remote-p default-directory)
+      (setq-local consult-buffer-filter nil)))
+  (add-hook 'vertico-mode-hook #'reomacs/consult-disable-remote-vc)
+#+end_src
+
 ** TRAMP RPC
 
 High-performance TRAMP backend using a Rust binary server over MessagePack-RPC/SSH.
@@ -5046,97 +5094,8 @@ See [[https://github.com/ArthurHeymans/emacs-tramp-rpc][emacs-tramp-rpc]].
 #+begin_src emacs-lisp
   (use-package msgpack)
 
-  ;; Fallback: proxy sudo through SSH for hosts without passwordless sudo.
-  ;; Use `/sudo:root@HOST:/path` — TRAMP routes sudo through an SSH shell.
-  ;; (add-to-list 'tramp-default-proxies-alist
-  ;;              '("jeeves\\.lan" "root" "/ssh:jeeves@jeeves.lan:"))
-
-  ;; Sudo composition — `/rpc:root@HOST`: `SSH`es as the configured user
-  ;; and runs `tramp-rpc-server` under `sudo`, giving root-level RPC access.
-  ;; Requires passwordless `sudo` for `tramp-rpc-server` on the remote host.
-  (defvar reomacs/tramp-rpc-sudo-compose-hosts '(("jeeves\\.lan" . "jeeves"))
-    "Alist of (HOST-REGEXP . SSH-USER) for rpc sudo composition.
-When connecting as root via rpc to a matching host, SSH connects
-as SSH-USER and runs tramp-rpc-server under sudo.")
-
-  (defun reomacs/tramp-rpc--sudo-match (host)
-    "Return the SSH user for HOST if it matches a sudo-compose entry."
-    (--some (when (string-match-p (car it) host)
-              (cdr it))
-            reomacs/tramp-rpc-sudo-compose-hosts))
-
-  (defun reomacs/tramp-rpc-sudo-connect-advice (orig-fn vec)
-    "Advise `tramp-rpc--connect' for sudo composition.
-When user is root and host matches `reomacs/tramp-rpc-sudo-compose-hosts',
-SSH as the real user and launch tramp-rpc-server under sudo.
-The binary path's ~/ is expanded as the SSH user, not root."
-    (let ((host (tramp-file-name-host vec)))
-      (-if-let (real-user (and (equal (tramp-file-name-user vec) "root")
-                               (reomacs/tramp-rpc--sudo-match host)))
-          ;; Build an SSH vec with the real user for ControlMaster/socket paths
-          (let ((ssh-vec (copy-tramp-file-name vec)))
-            (setf (tramp-file-name-user ssh-vec) real-user)
-            ;; 1. ControlMaster as the real SSH user
-            (tramp-rpc--ensure-controlmaster-directory)
-            (when tramp-rpc-use-controlmaster
-              (tramp-rpc--establish-controlmaster ssh-vec))
-            ;; 2. Start server: SSH as real-user, sudo the binary,
-            ;;    but use original vec (user=root) for TRAMP naming/storage
-            (let* ((binary-path (or tramp-rpc-deploy-remote-binary-path
-                                    "tramp-rpc-server"))
-                   ;; Expand ~/ as real user's home so sudo doesn't
-                   ;; resolve it as root's home
-                   (expanded-binary
-                    (replace-regexp-in-string
-                     "\\`~/" (format "~%s/" real-user) binary-path))
-                   (port (tramp-file-name-port vec))
-                   (proxyjump (tramp-rpc--hops-to-proxyjump vec))
-                   (ssh-args
-                    (append
-                     (list "ssh")
-                     tramp-rpc-ssh-args
-                     (list "-l" real-user)
-                     (when port (list "-p" (number-to-string port)))
-                     (when proxyjump (list "-J" proxyjump))
-                     (list "-o" "BatchMode=yes")
-                     (list "-o" "StrictHostKeyChecking=accept-new")
-                     (--mapcat (list "-o" it) tramp-rpc-ssh-options)
-                     (when tramp-rpc-use-controlmaster
-                       (list "-o" "ControlMaster=auto"
-                             "-o" (format "ControlPath=%s"
-                                          (tramp-rpc--controlmaster-socket-path ssh-vec))
-                             "-o" (format "ControlPersist=%s"
-                                          tramp-rpc-controlmaster-persist)))
-                     (list host (format "sudo %s" expanded-binary))))
-                   (process-name (tramp-get-connection-name vec))
-                   (buffer-name (tramp-buffer-name vec))
-                   (buffer (get-buffer-create buffer-name))
-                   process)
-              (with-current-buffer buffer
-                (erase-buffer)
-                (set-buffer-multibyte nil))
-              (let ((process-connection-type nil))
-                (setq process (apply #'start-process process-name buffer ssh-args)))
-              (set-process-query-on-exit-flag process nil)
-              (set-process-coding-system process 'binary 'binary)
-              (set-process-filter process #'tramp-rpc--connection-filter)
-              (tramp-rpc--set-connection vec process buffer)
-              (process-put process :tramp-rpc-vec vec)
-              (condition-case err
-                  (let ((response (tramp-rpc--call vec "system.info" nil)))
-                    (unless response
-                      (signal 'remote-file-error
-                              (list "sudo RPC server not responding on" host))))
-                (remote-file-error
-                 (tramp-rpc--remove-connection vec)
-                 (signal (car err) (cdr err))))
-              (tramp-set-connection-property process "connected" t)
-              (tramp-rpc--get-connection vec)))
-        (funcall orig-fn vec))))
-
   (use-package tramp-rpc
     :straight (:host github :repo "ArthurHeymans/emacs-tramp-rpc"
-                     :branch "multi-hop-test"
                      :files ("lisp/*.el"))
     :custom
     (tramp-rpc-deploy-never-deploy t)
@@ -5146,8 +5105,6 @@ The binary path's ~/ is expanded as the SSH user, not root."
                              "ServerAliveInterval=5"
                              "ServerAliveCountMax=1"))
     :config
-    (advice-add 'tramp-rpc--connect :around #'reomacs/tramp-rpc-sudo-connect-advice)
-
     (defun reomacs/tramp-rpc-guard-non-essential (orig-fn vec)
       "Refuse to open new RPC connections when `non-essential' is non-nil.
 Mirrors `tramp-maybe-open-connection' which checks `tramp-connectable-p'."
