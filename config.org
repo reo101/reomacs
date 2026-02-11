@@ -3025,6 +3025,82 @@ function. If any files were created by this advice, it then calls
 ;; (advice-remove 'wdired-finish-edit #'my-wdired-create-new-files-advice)
 #+end_src
 
+** Archives
+
+#+begin_src emacs-lisp :tangle no
+  (use-package arc-mode
+    :after evil
+    :mode ("\\.zip\\'" "\\.tar\\'" "\\.tar\\.gz\\'" "\\.tgz\\'" "\\.tar\\.bz2\\'")
+    :hook
+    (archive-mode . auto-revert-mode)
+    :config
+
+    (setq archive-zip-use-pkzip nil)
+    (setq archive-enable-cache t)
+
+    ;; Always refresh after writes
+    (add-hook 'archive-write-file-hook #'revert-buffer)
+
+    ;; ----------------------------
+    ;; Copy from Dired → archive
+    ;; ----------------------------
+    (defun reomacs/archive-copy-from-dired ()
+      "Copy marked files from a Dired buffer into current archive."
+      (interactive)
+      (unless (derived-mode-p 'archive-mode)
+        (user-error "Not in archive-mode"))
+      (let* ((archive-buffer (current-buffer))
+             (source-buffer (other-buffer archive-buffer t)))
+        (unless (with-current-buffer source-buffer
+                  (derived-mode-p 'dired-mode))
+          (user-error "Other buffer is not Dired"))
+        (let ((files (with-current-buffer source-buffer
+                       (dired-get-marked-files))))
+          (dolist (file files)
+            (archive-write-file-member
+             file
+             (file-name-nondirectory file))))
+        (revert-buffer)))
+
+    ;; ----------------------------
+    ;; Delete + refresh
+    ;; ----------------------------
+    (defun reomacs/archive-delete-and-refresh ()
+      (interactive)
+      (archive-expunge)
+      (revert-buffer))
+
+    ;; ----------------------------
+    ;; Smart Dired copy into archive
+    ;; ----------------------------
+    (defun reomacs/dired-copy-smart (orig-fun &rest args)
+      (let ((target (dired-dwim-target-directory)))
+        (if (and target
+                 (string-match-p "\\.\\(zip\\|tar\\|tgz\\)\\'" target))
+            (progn
+              (find-file target)
+              (reomacs/archive-copy-from-dired))
+          (apply orig-fun args))))
+
+    (advice-add 'dired-do-copy :around #'reomacs/dired-copy-smart)
+
+    ;; ----------------------------
+    ;; Evil bindings
+    ;; ----------------------------
+
+    ;; Archive-mode normal state
+    (evil-define-key 'normal archive-mode-map
+      (kbd "a") #'reomacs/archive-copy-from-dired
+      (kbd "D") #'reomacs/archive-delete-and-refresh
+      (kbd "gr") #'revert-buffer)
+
+    ;; Optional: make Dired feel symmetric
+    (evil-define-key 'normal dired-mode-map
+      (kbd "C") #'dired-do-copy
+      (kbd "R") #'dired-do-rename
+      (kbd "D") #'dired-do-delete))
+#+end_src
+
 * Calc
 
 #+begin_src emacs-lisp
