@@ -3423,6 +3423,71 @@ LSP config:
       (provide 'org-latex-preview)))
 #+end_src
 
+** Home Assistant
+
+#+begin_src emacs-lisp
+  (use-package hass
+    :straight t
+    :defer t
+    :init
+    (setq hass-host "hass.jeeves.reo101.xyz"
+          hass-port 443
+          hass-insecure nil
+          hass-apikey (lambda ()
+                        (auth-source-pick-first-password
+                         :host hass-host
+                         :user "apikey")))
+    :config
+    ;; hass uses all-the-icons; override icon lookup to use nerd-icons
+    (require 'nerd-icons)
+    (defun hass--icon-of-entity (entity-id)
+      "Get a nerd-icon for ENTITY-ID based on its domain."
+      (let* ((domain (hass--domain-of-entity entity-id))
+             (icon (pcase domain
+                     ("light"         "󰌵")
+                     ("switch"        "󰔡")
+                     ("automation"    "󰒓")
+                     ("media_player"  "󰐌")
+                     ("sensor"        "󰍽")
+                     ("binary_sensor" "󰍽")
+                     ("vacuum"        "󰇥")
+                     ("scene"         "󱄄")
+                     ("fan"           "󰈐")
+                     ("cover"         "󰦨")
+                     ("lock"          "󰌾")
+                     (_               "󰒓"))))
+        (propertize icon 'face 'nerd-icons-lsilver)))
+    (setq hass-dash-layouts
+          '((default .
+             ((hass-dash-group
+               :title "Home Assistant"
+               :format "%t\n\n%v"
+
+               (hass-dash-group
+                :title "Lights"
+                :title-face outline-2
+                (hass-dash-toggle :entity-id "light.ldv_smart_tube_t8"))
+
+               (hass-dash-group
+                :title "Media"
+                :title-face outline-2
+                :format "\n%t\n\n%v"
+                (hass-dash-toggle :entity-id "media_player.samsung_tv")
+                (hass-dash-toggle :entity-id "media_player.chromecast")
+                (hass-dash-state  :entity-id "media_player.jellyseerr_3"))
+
+               (hass-dash-group
+                :title "Phone (cheetah)"
+                :title-face outline-2
+                :format "\n%t\n\n%v"
+                (hass-dash-state :entity-id "sensor.cheetah_battery_level" :format "Battery: %v\n")
+                (hass-dash-state :entity-id "sensor.cheetah_battery_state" :format "State: %v\n")
+                (hass-dash-state :entity-id "sensor.cheetah_next_alarm_2"  :format "Alarm: %v\n")))))))
+    :bind
+    ("C-c h" . hass-call-service)
+    ("C-c H" . hass-dash-open))
+#+end_src
+
 * Reomodeline
 
 Native heirline-inspired mode-line.
