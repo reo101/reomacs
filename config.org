@@ -170,12 +170,6 @@ Skips display-touching initialization on reload to avoid PGTK crashes."
   ;; Indentation
   ;; Always use spaces instead of tabs
   (setq-default indent-tabs-mode nil)
-
-  ;; Specifically make sure org-mode and emacs-lisp-mode use spaces
-  (add-hook 'org-mode-hook (lambda () (setq indent-tabs-mode nil)))
-  (add-hook 'emacs-lisp-mode-hook (lambda () (setq indent-tabs-mode nil)))
-
-  ;; Optional: make tab always insert 2 spaces (or your preferred width)
   (setq-default tab-width 2)
 
   ;; Whitespace visualization (matching nvim listchars)
@@ -187,7 +181,8 @@ Skips display-touching initialization on reload to avoid PGTK crashes."
             ; (newline-mark ?\n [?↴ ?\n])    ; eol
             ))
   ;; Only enable whitespace-mode in prog-mode buffers
-  (add-hook 'prog-mode-hook #'whitespace-mode)
+  (use-package whitespace
+    :hook (prog-mode . whitespace-mode))
 #+end_src
 
 ** Nix-managed binaries
@@ -245,7 +240,12 @@ These are fetched and built by nix, then added to the PATH.
         (goto-char (point-max))
         (eval-print-last-sexp)))
     (load bootstrap-file nil 'nomessage))
-  (setopt straight-use-package-by-default t)
+  (straight-use-package 'use-package)
+  (require 'use-package)
+  (setq straight-use-package-by-default t)
+
+  ;; Ensure straight build directory is in load-path for early requires
+  (add-to-list 'load-path (expand-file-name "straight/build/dash" user-emacs-directory))
   ;; Pin exact versions with straight.el lockfile support.
   ;; Use M-x reomacs/straight-freeze to update the lockfile.
   (setopt straight-vc-git-default-clone-depth 1)
