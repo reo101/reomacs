@@ -814,26 +814,11 @@ Emacs 29+ includes native tree-sitter support via the `treesit` module. This
 provides fast syntax highlighting, indentation, and structural navigation via
 *-ts-mode variants (python-ts-mode, rust-ts-mode, etc).
 
+Grammars should be provided by your system package manager (e.g., Nix's
+treesit-grammars). Emacs auto-discovers grammars in standard locations.
+
 #+begin_src emacs-lisp
-  ;; NixOS provides grammars via treesit-grammars.with-all-grammars
-  ;; They're in the emacs closure but in a separate store path
   (when (treesit-available-p)
-    (defvar reomacs/treesit-load-paths-cached nil
-      "Cached tree-sitter grammar load paths for this Emacs session.")
-
-    (defun reomacs/treesit--discover-load-paths ()
-      "Return cached grammar paths, scanning nix store only once."
-      (or reomacs/treesit-load-paths-cached
-          (setq reomacs/treesit-load-paths-cached
-                (->> (-concat
-                      (list "/run/current-system/sw/lib/"
-                            "/run/current-system/sw/lib/tree-sitter/")
-                      (--map (expand-file-name "lib/" it)
-                             (directory-files "/nix/store/" t "emacs-treesit-grammars$")))
-                     (-filter #'file-directory-p)))))
-
-    (setq treesit-extra-load-path (reomacs/treesit--discover-load-paths))
-
     (defun reomacs/treesit--grammar-available-p (lang)
       "Check if grammar for LANG is available."
       (or (treesit-language-available-p lang)
