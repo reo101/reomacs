@@ -270,6 +270,38 @@ These are fetched and built by nix, then added to the PATH.
                 (load-theme 'modus-vivendi-tinted t))))
 #+end_src
 
+** Ligatures (Maple Mono)
+
+#+begin_src emacs-lisp :noweb no
+  (use-package ligature
+    :straight (ligature :type git :host github :repo "mickeynp/ligature.el")
+    :config
+    ;; Maple Mono's documented CALT ligatures:
+    ;; https://github.com/subframe7536/maple-font/blob/variable/source/features/README.md
+    (defconst reomacs/maple-mono-ligatures
+      '("::" "?." "<#--" ":::" "..<" "<!---->" "?:" ".=" "<->" ":?" "<~" "<-->"
+        ":?>" "~>" "->" "<:" "~~" "<-" ":>" "<~>" "-->" ":<" "<~~" "<--"
+        "<:<" "~~>" ">->" ">:>" "-~" "<-<" "__" "~-" "|->" "#{" "~@" "<-|"
+        "#[" "~~~~~~~" "-------" "#(" ">--" "#?" "<>" "--<" "#!" "</" "<|||"
+        "#:" "/>" "|||>" "#=" "</>" "<||" "#_" "<+" "||>" "#__" "+>" "<|"
+        "#_(" "<+>" "|>" "]#" "<*" "<|>" "#######" "*>" "_|_" "<<" "<*>"
+        "[TRACE]" "<<<" ">=" "[DEBUG]" ">>" "<=" "[INFO]" ">>>" "<=<" "[WARN]"
+        "{{" ">=>" "[ERROR]" "}}" "==" "[FATAL]" "{|" "===" "[TODO]" "|}"
+        "!=" "[FIXME]" "{{--" "!==" "[NOTE]" "{{!--" "=/=" "[HACK]" "--}}"
+        "=!=" "[MARK]" "[|" "|=" "[EROR]" "|]" "<=>" "[WARNING]" "!!" "<==>"
+        "todo))" "||" "<==" "fixme))" "??" "==>" "???" "=>" "&&" "<=|"
+        "&&&" "|=>" "//" "=<=" "///" "=>=" "/*" "=======" "/**" ">=<"
+        "*/" ":=" "++" "=:" "+++" ":=:" ";;" "=:=" ";;;" ".." "--" "..."
+        "---" ".?" "<!--" "\\\\" "\\'" "\\.")
+      "Ligatures supported by Maple Mono's default CALT feature.")
+
+    ;; Let Maple Mono compose documented ligatures in code buffers.
+    (ligature-set-ligatures 'prog-mode reomacs/maple-mono-ligatures)
+    ;; Hex literals like 0xA12 / 0x56 / 1920x1080 are part of Maple's CALT set.
+    (ligature-set-ligatures 'prog-mode
+                            '(("0" (rx (and "x" (+ (in "A-F" "a-f" "0-9")))))))
+    (global-ligature-mode t))
+#+end_src
 
 ** Rainbow Delimiters (legacy)
 
