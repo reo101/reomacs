@@ -1229,7 +1229,7 @@ Do not allow the cursor in the minibuffer prompt.
 #+begin_src emacs-lisp
   ;; NOTE: which-key is built-in since Emacs 30.1
   (use-package which-key
-    :ensure nil  ; built-in, no need to fetch
+    :straight nil  ; built-in
     :custom
     (which-key-add-column-padding 2)
     (which-key-allow-multiple-replacements t)
@@ -1372,10 +1372,50 @@ Do not allow the cursor in the minibuffer prompt.
     :after vertico
     :straight nil  ; part of vertico
     :bind (:map vertico-map
-           ("DEL" . vertico-directory-delete-char)
+           ("DEL" . reomacs/vertico-directory-delete-char)
            ("M-DEL" . vertico-directory-delete-word)
            ("RET" . vertico-directory-enter))
-    :hook (rfn-eshadow-update-overlay . vertico-directory-tidy))
+    :hook (rfn-eshadow-update-overlay . vertico-directory-tidy)
+    :config
+    (defun reomacs/vertico-directory-delete-char (n)
+      "Like `vertico-directory-delete-char' but respects TRAMP boundaries.
+When in a remote file path, treats `:' `@' `|' and `#' as additional
+boundaries beyond `/', so backspace stops at TRAMP components.
+If point is right after a delimiter, delete just that delimiter.
+If point is after a non-delimiter, delete back to the previous boundary."
+      (interactive "p")
+      (let* ((file-category (eq 'file (vertico--metadata-get 'category)))
+             (no-region (not (and (use-region-p) delete-active-region (= n 1))))
+             (in-remote (and file-category
+                             no-region
+                             (> (point) (minibuffer-prompt-end))
+                             (vertico--remote-p
+                              (buffer-substring-no-properties
+                               (minibuffer-prompt-end) (point))))))
+        (cond
+         ;; TRAMP path, at a delimiter: delete just the delimiter
+         ((and in-remote (memq (char-before) '(?/ ?: ?@ ?| ?#)))
+          (with-no-warnings (delete-backward-char n)))
+         ;; TRAMP path, at a non-delimiter: delete back to previous boundary
+         ((and in-remote (> (point) (minibuffer-prompt-end)))
+          (let (found)
+            (dotimes (_ n found)
+              (save-excursion
+                (let ((end (point)))
+                  (goto-char (1- end))
+                  (if (re-search-backward "[/:@|#]" (minibuffer-prompt-end) t)
+                      (progn
+                        (delete-region (1+ (point)) end)
+                        (setq found t))
+                    (delete-region (minibuffer-prompt-end) end)
+                    (setq found t)))))
+            (unless found
+              (with-no-warnings (delete-backward-char n)))))
+         ;; Non-remote: default vertico-directory behavior
+         (t
+          (unless (and no-region (eq (char-before) ?/)
+                       (vertico-directory-up n))
+            (with-no-warnings (delete-backward-char n))))))))
 
   ;; Optional: allows per-command display configuration
   (use-package vertico-multiform
