@@ -348,6 +348,21 @@ This legacy version can be disabled by setting `reomacs/use-legacy-rainbow` to n
     :hook (compilation-filter . ansi-color-compilation-filter))
 #+end_src
 
+** Indentation Guides
+
+Language-agnostic indentation guides with optional tree-sitter enhancement.
+
+#+begin_src emacs-lisp
+  (use-package indent-bars
+    :hook (prog-mode . indent-bars-mode)
+    :custom
+    (indent-bars-treesit-support t)
+    (indent-bars-no-descend-lists 'skip)
+    ;; Emacs <30 on pgtk had stipple issues; prefer character bars there.
+    (indent-bars-prefer-character
+     (and (eq window-system 'pgtk) (< emacs-major-version 30))))
+#+end_src
+
 ** Treesit Rainbow Delimiters
 
 Tree-sitter based rainbow delimiters - works for all languages with tree-sitter grammars.
@@ -789,6 +804,468 @@ Using ultra-scroll (best smooth scrolling available on Linux - momentum requires
     (setq pgtk-wait-for-event-timeout 0.0001)  ; 0.1ms instead of default
     (setq redisplay-dont-pause nil))            ; Allow partial redisplay
 #+end_src
+
+** ultra-scroll Instrumentation
+
+#+begin_src emacs-lisp
+  ;; ---------------------------------------------------------------------------
+  ;; ultra-scroll Performance Instrumentation
+  ;; ---------------------------------------------------------------------------
+
+  (defvar reomacs/ultra-scroll--timing-ring (make-ring 100)
+    "Ring buffer for scroll timing data (last 100 scrolls).")
+
+  (defvar reomacs/ultra-scroll--timing-enabled nil
+    "Whether scroll timing instrumentation is active.")
+
+  (defun reomacs/ultra-scroll--wrap-with-timing (orig-fun delta)
+    "Wrap scroll function ORIG-FUN with timing measurement.
+DELTA is the pixel scroll amount."
+    (if (not reomacs/ultra-scroll--timing-enabled)
+        (funcall orig-fun delta)
+      (let* ((start (current-time))
+             (gc-before gc-elapsed)
+             (gc-before-cons gcs-done)
+             result)
+        (setq result (funcall orig-fun delta))
+        (let* ((elapsed (float-time (time-since start)))
+               (gc-during (- gc-elapsed gc-before))
+               (gc-cons-during (- gcs-done gc-before-cons)))
+          (ring-insert reomacs/ultra-scroll--timing-ring
+                       (list :function orig-fun
+                             :delta delta
+                             :elapsed elapsed
+                             :gc-during gc-during
+                             :gc-cons gc-cons-during
+                             :buffer (buffer-name)
+                             :major-mode major-mode
+                             :time (current-time))))
+        result)))
+
+  (defun reomacs/ultra-scroll-timing-enable ()
+    "Enable timing instrumentation for ultra-scroll functions."
+    (interactive)
+    (setq reomacs/ultra-scroll--timing-enabled t)
+    (advice-add 'ultra-scroll-down :around #'reomacs/ultra-scroll--wrap-with-timing)
+    (advice-add 'ultra-scroll-up :around #'reomacs/ultra-scroll--wrap-with-timing)
+    (message "ultra-scroll timing instrumentation enabled"))
+
+  (defun reomacs/ultra-scroll-timing-disable ()
+    "Disable timing instrumentation for ultra-scroll functions."
+    (interactive)
+    (setq reomacs/ultra-scroll--timing-enabled nil)
+    (advice-remove 'ultra-scroll-down #'reomacs/ultra-scroll--wrap-with-timing)
+    (advice-remove 'ultra-scroll-up #'reomacs/ultra-scroll--wrap-with-timing)
+    (message "ultra-scroll timing instrumentation disabled"))
+
+  (defun reomacs/ultra-scroll-timing-report ()
+    "Display timing report for recent scroll operations."
+    (interactive)
+    (if (ring-empty-p reomacs/ultra-scroll--timing-ring)
+        (message "No timing data collected yet.")
+      (let* ((items (ring-elements reomacs/ultra-scroll--timing-ring))
+             (down-items (cl-remove-if-not (lambda (x) (eq (plist-get x :function) 'ultra-scroll-down)) items))
+             (up-items (cl-remove-if-not (lambda (x) (eq (plist-get x :function) 'ultra-scroll-up)) items))
+             (all-times (mapcar (lambda (x) (plist-get x :elapsed)) items))
+             (gc-times (mapcar (lambda (x) (plist-get x :gc-during)) items))
+             (avg-time (/ (cl-reduce #'+ all-times) (length all-times)))
+             (max-time (apply #'max all-times))
+             (min-time (apply #'min all-times))
+             (avg-gc (/ (cl-reduce #'+ gc-times) (length gc-times))))
+        (with-current-buffer (get-buffer-create "*ultra-scroll-timing*")
+          (erase-buffer)
+          (insert "== ultra-scroll Timing Report ==\n\n")
+          (insert (format "Total scroll events: %d (down: %d, up: %d)\n"
+                          (length items) (length down-items) (length up-items)))
+          (insert (format "Avg time: %.3fms  Min: %.3fms  Max: %.3fms\n"
+                          (* 1000 avg-time) (* 1000 min-time) (* 1000 max-time)))
+          (insert (format "Avg GC time during scroll: %.3fms\n\n" (* 1000 avg-gc)))
+          (insert "Distribution:\n")
+          (let ((ranges '((0 0.003 "<3ms") (0.003 0.005 "3-5ms") (0.005 0.010 "5-10ms")
+                          (0.010 0.015 "10-15ms") (0.015 0.020 "15-20ms") (0.020 999 ">20ms"))))
+            (dolist (range ranges)
+              (let* ((min (nth 0 range))
+                     (max (nth 1 range))
+                     (label (nth 2 range))
+                     (count (cl-count-if (lambda (tm) (and (>= tm min) (< tm max))) all-times)))
+                (insert (format "  %5s: %s\n" label (make-string count ?█))))))
+          (insert "\nRecent slow scrolls (>10ms):\n")
+          (let ((slow (cl-remove-if-not (lambda (x) (> (plist-get x :elapsed) 0.010)) items))
+                (cnt 0))
+            (dolist (s (reverse slow))
+              (when (< cnt 10)
+                (insert (format "  %.2fms in %s (%s)\n"
+                                (* 1000 (plist-get s :elapsed))
+                                (plist-get s :buffer)
+                                (plist-get s :major-mode)))
+                (cl-incf cnt))))
+          (pop-to-buffer (current-buffer))))))
+
+  (defun reomacs/ultra-scroll-elp-profile ()
+    "Start ELP profiling on ultra-scroll functions."
+    (interactive)
+    (require 'elp)
+    (elp-restore-all)
+    (elp-instrument-package "ultra-scroll-")
+    (message "ELP profiling started. Scroll around, then M-x elp-results"))
+
+  (defun reomacs/ultra-scroll-diagnose ()
+    "Run comprehensive ultra-scroll diagnostics."
+    (interactive)
+    (let ((buf (get-buffer-create "*ultra-scroll-diagnose*")))
+      (with-current-buffer buf
+        (erase-buffer)
+        (insert "== ultra-scroll Diagnostics ==\n\n")
+        (insert (format "Emacs: %s\n" (emacs-version)))
+        (insert (format "Native comp: %s\n"
+                        (if (string-match "\\bNATIVE_COMP\\b" system-configuration-features)
+                            "YES ✓" "NO ✗ (build with native-comp for 3x speedup)")))
+        (insert (format "XInput2: %s\n"
+                        (if (and (featurep 'x) (featurep 'xinput2))
+                            "YES ✓" (if (featurep 'x) "NO ✗ (needed for X11)" "N/A (not X11)"))))
+        (insert (format "Window system: %s\n" window-system))
+        (insert "\nConfiguration:\n")
+        (insert (format "  scroll-conservatively: %s (yours: %s)\n"
+                        (if (<= scroll-conservatively 101) "✓" "✗") scroll-conservatively))
+        (insert (format "  scroll-margin: %s (yours: %s)\n"
+                        (if (= scroll-margin 0) "✓" "✗") scroll-margin))
+        (insert (format "  ultra-scroll-mode: %s\n\n" (if ultra-scroll-mode "ON" "OFF")))
+        (insert "Modeline component timing:\n")
+        (when (fboundp 'reomodeline-left)
+          (let ((components '(reomodeline-vimode reomodeline-macro reomodeline-file-block
+                                                reomodeline-vcs reomodeline-diagnostics)))
+            (dolist (c components)
+              (let ((start (current-time))
+                    (result (condition-case err (funcall c) (error "ERROR"))))
+                (insert (format "  %s: %.3fms\n" c (* 1000 (float-time (time-since start)))))))))
+        (pop-to-buffer buf))))
+
+  (defun reomacs/ultra-scroll-test-minimal ()
+    "Temporarily set minimal mode-line to isolate performance issues."
+    (interactive)
+    (setq mode-line-format " NADA ")
+    (force-mode-line-update)
+    (message "Minimal mode-line active. Test scrolling, then M-x reomacs/ultra-scroll-test-restore"))
+
+  (defun reomacs/ultra-scroll-test-restore ()
+    "Restore normal mode-line after testing."
+    (interactive)
+    (kill-local-variable 'mode-line-format)
+    (force-mode-line-update)
+    (message "Mode-line restored"))
+
+  ;; Org-mode scroll slowdown analysis
+  (defun reomacs/org-scroll-profile ()
+    "Profile what's slow when scrolling in org-mode."
+    (interactive)
+    (require 'elp)
+    (elp-restore-all)
+    ;; Instrument common org-mode bottlenecks
+    (elp-instrument-function 'org-element-context)
+    (elp-instrument-function 'org-element-at-point)
+    (elp-instrument-function 'font-lock-fontify-region)
+    (elp-instrument-function 'reomodeline-left)
+    (elp-instrument-function 'reomodeline-right)
+    (message "Org scroll profiling enabled. Scroll in your org buffer, then M-x elp-results"))
+
+  (defun reomacs/buffer-performance-stats (buffer)
+    "Show performance-relevant stats for BUFFER."
+    (interactive "bBuffer: ")
+    (with-current-buffer buffer
+      (message "Buffer: %s\n  Lines: %d\n  Size: %d bytes\n  Overlays: %d\n  Text properties: %d\n  Fontified: %s"
+               (buffer-name)
+               (count-lines (point-min) (point-max))
+               (buffer-size)
+               (length (overlay-lists))
+               (length (text-properties-at (point-min)))
+               (if (bound-and-true-p font-lock-mode) "yes" "no"))))
+
+  ;; Font-lock/jit-lock analysis - the hidden scroll killer
+  (defun reomacs/font-lock-profile ()
+    "Profile font-lock which is often the real scroll bottleneck."
+    (interactive)
+    (require 'elp)
+    (elp-restore-all)
+    (elp-instrument-function 'jit-lock-function)
+    (elp-instrument-function 'font-lock-fontify-region)
+    (elp-instrument-function 'font-lock-default-fontify-region)
+    (message "Font-lock profiling enabled. Scroll and watch for jit-lock spikes, then M-x elp-results"))
+
+  (defun reomacs/check-scroll-hooks ()
+    "Check what hooks might be slowing down scroll."
+    (interactive)
+    (let ((buf (get-buffer-create "*scroll-hooks*")))
+      (with-current-buffer buf
+        (erase-buffer)
+        (insert "== Hooks that run during scroll ==\n\n")
+        (dolist (hook '(post-command-hook window-scroll-functions
+                        pre-redisplay-functions jit-lock-after-change-extend-region-functions))
+          (insert (format "\n%s (%d functions):\n" hook (length (symbol-value hook))))
+          (dolist (fn (symbol-value hook))
+            (insert (format "  - %s\n" fn))))
+        (pop-to-buffer buf))))
+
+  (defun reomacs/org-buffer-analysis ()
+    "Analyze org buffer for performance issues."
+    (interactive)
+    (let ((headlines 0)
+          (tables 0)
+          (blocks 0)
+          (links 0)
+          (images 0))
+      (org-map-entries (lambda () (cl-incf headlines)) nil nil 'comment)
+      (save-excursion
+        (goto-char (point-min))
+        (while (re-search-forward "^\\s-*|" nil t) (cl-incf tables))
+        (goto-char (point-min))
+        (while (re-search-forward "^#\\+begin_" nil t) (cl-incf blocks))
+        (goto-char (point-min))
+        (while (re-search-forward "\\[\\[.*\\]\\[" nil t) (cl-incf links))
+        (goto-char (point-min))
+        (while (re-search-forward "\\[\\[file:" nil t) (cl-incf images)))
+      (message "Org analysis:\n  Headlines: %d\n  Tables: %d\n  Blocks: %d\n  Links: %d\n  Images: %d"
+               headlines tables blocks links images)))
+
+  ;; ---------------------------------------------------------------------------
+  ;; High-Refresh-Rate (120Hz+) Smoothness Diagnostics
+  ;; ---------------------------------------------------------------------------
+
+  (defvar reomacs/scroll--jitter-log nil
+    "List of (timestamp . delta) for jitter analysis.")
+
+  (defun reomacs/scroll--log-jitter (orig-fun delta)
+    "Log scroll timing for jitter analysis."
+    (push (cons (current-time) delta) reomacs/scroll--jitter-log)
+    ;; Keep last 200 entries
+    (when (> (length reomacs/scroll--jitter-log) 200)
+      (setq reomacs/scroll--jitter-log (cl-subseq reomacs/scroll--jitter-log 0 200)))
+    (funcall orig-fun delta))
+
+  (defun reomacs/scroll-jitter-enable ()
+    "Enable jitter logging for smoothness analysis."
+    (interactive)
+    (setq reomacs/scroll--jitter-log nil)
+    (advice-add 'ultra-scroll-down :around #'reomacs/scroll--log-jitter)
+    (advice-add 'ultra-scroll-up :around #'reomacs/scroll--log-jitter)
+    (message "Jitter logging enabled. Scroll around, then M-x reomacs/scroll-jitter-report"))
+
+  (defun reomacs/scroll-jitter-disable ()
+    "Disable jitter logging."
+    (interactive)
+    (advice-remove 'ultra-scroll-down #'reomacs/scroll--log-jitter)
+    (advice-remove 'ultra-scroll-up #'reomacs/scroll--log-jitter)
+    (message "Jitter logging disabled"))
+
+  (defun reomacs/scroll-jitter-report ()
+    "Analyze scroll timing for jitter (irregular intervals)."
+    (interactive)
+    (if (< (length reomacs/scroll--jitter-log) 10)
+        (message "Not enough data. Scroll more first.")
+      (let* ((times (reverse reomacs/scroll--jitter-log))
+             (intervals nil)
+             prev-time)
+        (dolist (entry times)
+          (let ((ts (car entry)))
+            (when prev-time
+              (push (float-time (time-subtract ts prev-time)) intervals))
+            (setq prev-time ts)))
+        (let* ((avg-int (/ (cl-reduce #'+ intervals) (length intervals)))
+               (min-int (apply #'min intervals))
+               (max-int (apply #'max intervals))
+               (jitter (- max-int min-int))
+               (cv (/ (sqrt (/ (cl-reduce #'+ (mapcar (lambda (x) (expt (- x avg-int) 2)) intervals))
+                               (length intervals)))
+                      avg-int)))
+          (with-current-buffer (get-buffer-create "*scroll-jitter*")
+            (erase-buffer)
+            (insert "== Scroll Smoothness Analysis ==\n\n")
+            (insert (format "Display: Assumed 160Hz (target: %.2fms per frame)\n\n" (/ 1000.0 160)))
+            (insert (format "Avg interval: %.3fms\n" (* 1000 avg-int)))
+            (insert (format "Min interval: %.3fms\n" (* 1000 min-int)))
+            (insert (format "Max interval: %.3fms\n" (* 1000 max-int)))
+            (insert (format "Jitter (max-min): %.3fms\n\n" (* 1000 jitter)))
+            (insert (format "Coefficient of variation: %.1f%%\n\n" (* 100 cv)))
+            (insert "Interpretation:\n")
+            (cond
+             ((> cv 0.5) (insert "  🔴 High jitter (>50%) - very noticeable stutter\n"))
+             ((> cv 0.3) (insert "  🟡 Moderate jitter (30-50%) - some stutter visible\n"))
+             ((> cv 0.15) (insert "  🟡 Low jitter (15-30%) - minor stutter\n"))
+             (t (insert "  ✅ Very smooth (<15%) - excellent\n")))
+            (insert "\n" (if (> (* 1000 avg-int) 10)
+                        "⚠️  Intervals >10ms suggest event batching or frame drops"
+                      "✓ Intervals look good for high-refresh"))
+            (pop-to-buffer (current-buffer)))))))
+
+  ;; High-refresh-rate optimizations for ultra-scroll
+  (defun reomacs/high-refresh-setup ()
+    "Optimize Emacs for high-refresh-rate displays (120Hz+)."
+    (interactive)
+    ;; Reduce input latency
+    (setq redisplay-skip-initial-input nil)
+    ;; Don't skip frames
+    (setq redisplay-skip-fontification-on-input nil)
+    ;; Faster idle timers
+    (setq timer-max-repeats 1000)
+    ;; Don't let GC run during scroll (handled by ultra-scroll, but ensure it's tight)
+    (setq gc-cons-threshold (* 16 1024 1024))  ; 16MB
+    ;; Disable cursor blink which can cause frame drops
+    (blink-cursor-mode -1)
+    ;; Ensure hl-line doesn't cause redisplay issues
+    (setq hl-line-sticky-flag nil)
+    (message "High-refresh-rate optimizations applied"))
+
+  ;; Suggest lower gc-cons-percentage for smoother scrolling
+  (with-eval-after-load 'ultra-scroll
+    ;; Make GC even less likely during scroll on high-refresh systems
+    (setq ultra-scroll-gc-percentage 0.8))
+
+  ;; ---------------------------------------------------------------------------
+  ;; Pause Detection - Find what's causing 300ms+ scroll freezes
+  ;; ---------------------------------------------------------------------------
+
+  (defvar reomacs/scroll--pause-log nil
+    "List of detected pauses: (timestamp duration-ms culprit).")
+
+  (defvar reomacs/scroll--pause-threshold 0.05
+    "Threshold in seconds (50ms) to consider a pause.")
+
+  (defvar reomacs/scroll--last-event-time nil)
+
+  (defun reomacs/scroll--detect-pause (orig-fun delta)
+    "Detect and log what's causing long pauses during scroll."
+    (let* ((now (current-time))
+           (pause-duration (when reomacs/scroll--last-event-time
+                             (float-time (time-subtract now reomacs/scroll--last-event-time)))))
+      ;; Log if this is a significant pause (>50ms)
+      (when (and pause-duration (> pause-duration reomacs/scroll--pause-threshold))
+        (let* ((gc-before gc-elapsed)
+               (gc-before-cons gcs-done)
+               (gc-during 0)
+               culprit)
+          ;; Try to identify the culprit
+          (setq culprit
+                (cond
+                 ((and (> (- gc-elapsed gc-before) 0)
+                       (> (- gc-elapsed gc-before) (* pause-duration 0.5)))
+                  (format "GC (%.0f%% of pause)" (* 100 (/ (- gc-elapsed gc-before) pause-duration))))
+                 ((and (> (- gc-elapsed gc-before) 0) (> pause-duration 0.1))
+                  (format "GC+other (%.0f%%)" (* 100 (/ (- gc-elapsed gc-before) pause-duration))))
+                 ((bound-and-true-p jit-lock--defer-timer) "jit-lock-defer")
+                 ((bound-and-true-p company-pseudo-tooltip-overlay) "company-tooltip")
+                 ((and (boundp 'lsp--buffer-workspaces) lsp--buffer-workspaces) "LSP")
+                 ((and (boundp 'flycheck-mode) flycheck-mode) "flycheck")
+                 ((and (boundp 'flymake-mode) flymake-mode) "flymake")
+                 ((and (boundp 'font-lock-mode) font-lock-mode) "font-lock")
+                 ((> (length post-command-hook) 10) "heavy-post-command")
+                 ((> (length pre-redisplay-functions) 5) "heavy-redisplay")
+                 ((and (boundp 'undo-tree-mode) undo-tree-mode) "undo-tree")
+                 (t "unknown")))
+          (push (list now pause-duration culprit delta (buffer-name) major-mode)
+                reomacs/scroll--pause-log)
+          ;; Keep last 50 pauses
+          (when (> (length reomacs/scroll--pause-log) 50)
+            (setq reomacs/scroll--pause-log (cl-subseq reomacs/scroll--pause-log 0 50)))))
+      (setq reomacs/scroll--last-event-time now)
+      (funcall orig-fun delta)))
+
+  (defun reomacs/scroll-pause-enable ()
+    "Enable pause detection to find scroll freezes."
+    (interactive)
+    (setq reomacs/scroll--pause-log nil)
+    (setq reomacs/scroll--last-event-time nil)
+    (advice-add 'ultra-scroll-down :around #'reomacs/scroll--detect-pause)
+    (advice-add 'ultra-scroll-up :around #'reomacs/scroll--detect-pause)
+    (message "Pause detection enabled. Scroll until you feel a freeze, then M-x reomacs/scroll-pause-report"))
+
+  (defun reomacs/scroll-pause-disable ()
+    "Disable pause detection."
+    (interactive)
+    (advice-remove 'ultra-scroll-down #'reomacs/scroll--detect-pause)
+    (advice-remove 'ultra-scroll-up #'reomacs/scroll--detect-pause)
+    (message "Pause detection disabled"))
+
+  (defun reomacs/scroll-pause-report ()
+    "Show report of detected pauses during scroll."
+    (interactive)
+    (if (null reomacs/scroll--pause-log)
+        (message "No pauses detected yet. Keep scrolling...")
+      (let ((sorted (sort reomacs/scroll--pause-log
+                          (lambda (a b) (> (nth 1 a) (nth 1 b))))))
+        (with-current-buffer (get-buffer-create "*scroll-pauses*")
+          (erase-buffer)
+          (insert "== Scroll Freeze Analysis ==\n\n")
+          (insert (format "Total pauses >50ms detected: %d\n\n" (length sorted)))
+          (insert "Top pauses by duration:\n")
+          (let ((count 0))
+            (dolist (pause sorted)
+              (when (< count 10)
+                (let ((ts (nth 0 pause))
+                      (duration (nth 1 pause))
+                      (culprit (nth 2 pause))
+                      (delta (nth 3 pause))
+                      (buf (nth 4 pause))
+                      (mode (nth 5 pause)))
+                  (insert (format "  %5.1fms  %-20s  %s (%s)\n"
+                                  (* 1000 duration)
+                                  culprit
+                                  buf
+                                  mode))
+                  (cl-incf count))))
+          (insert "\nCulprit summary:\n")
+          (let ((counts (make-hash-table :test 'equal)))
+            (dolist (pause sorted)
+              (let ((culprit (nth 2 pause)))
+                (puthash culprit (1+ (gethash culprit counts 0)) counts)))
+            (maphash (lambda (k v)
+                       (insert (format "  %-20s: %d pauses\n" k v)))
+                     counts))
+          (pop-to-buffer (current-buffer)))))))
+
+  ;; Aggressive anti-freeze settings for 160Hz
+  (defun reomacs/aggressive-smooth-scroll ()
+    "Apply aggressive settings to eliminate scroll freezes."
+    (interactive)
+    ;; Prevent GC during scroll entirely
+    (setq gc-cons-percentage 1.0)  ; Ultra-scroll will set to 0.8, we go further
+    ;; Disable all deferral that causes pauses
+    (setq jit-lock-defer-time nil)  ; Fontify immediately, no defer
+    ;; But use context lines to reduce work
+    (setq jit-lock-contextually t)
+    ;; Disable all idle timers that might fire during scroll
+    (setq timer-max-repeats 100)
+    ;; Don't let company or other popups delay us
+    (setq company-idle-delay nil)  ; Only manual completion
+    ;; Disable auto-save which can cause pauses
+    (setq auto-save-interval 0)
+    (setq auto-save-timeout 0)
+    ;; Disable undo-tree auto-save if present
+    (setq undo-tree-auto-save-history nil)
+    (message "Aggressive anti-freeze settings applied. Test scrolling now."))
+
+  (defun reomacs/restore-default-scroll-settings ()
+    "Restore default scroll settings after aggressive mode."
+    (interactive)
+    (setq gc-cons-percentage 0.5)
+    (setq jit-lock-defer-time 0.1)
+    (setq jit-lock-contextually nil)
+    (setq timer-max-repeats 1000)
+    (setq company-idle-delay 0.2)
+    (setq auto-save-interval 300)
+    (setq auto-save-timeout 30)
+    (message "Default scroll settings restored."))
+
+  ;; Native profiler wrapper for scroll
+  (defun reomacs/scroll-profile-start ()
+    "Start native profiler during scroll."
+    (interactive)
+    (profiler-start 'cpu)
+    (message "Profiler active. Scroll, then M-x profiler-report"))
+
+  (defun reomacs/scroll-profile-stop ()
+    "Stop scroll profiling."
+    (interactive)
+    (profiler-stop)
+    (message "Profiler stopped."))
 #+end_src
 
 ** Extra Completion Sources (Cape)
