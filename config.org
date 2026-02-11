@@ -1839,6 +1839,89 @@ Transient menu for build tool targets (make, just, task, etc.).
                 :override #'reomacs/transient-compile-shell-run))
 #+end_src
 
+* Shells
+
+** EShell
+
+#+begin_src emacs-lisp
+    (require 'subr-x)
+
+    (defun reomacs/eshell--user-host ()
+      "Return user@host with separate colors, TRAMP-aware."
+      (let* ((remote (file-remote-p default-directory 'host))
+             (host (or remote (system-name)))
+             (user (or (file-remote-p default-directory 'user)
+                       (user-login-name))))
+        (concat
+         ;; red/pink for user
+         (propertize user 'face '(:foreground "#f38ba8"))
+         ;; green for @
+         (propertize "@" 'face '(:foreground "#a6e3a1"))
+         ;; blue for host
+         (propertize host 'face '(:foreground "#89b4fa")))))
+
+    (defun reomacs/eshell--pwd ()
+      "Pretty abbreviated path, propertized."
+      (propertize (abbreviate-file-name (eshell/pwd))
+                  'face '(:foreground "#50fa7b")))
+
+    (defun reomacs/eshell--time ()
+      "Current time, propertized."
+      (propertize (format-time-string "%H:%M:%S")
+                  'face '(:foreground "#f1fa8c")))
+
+    (defun reomacs/eshell-prompt ()
+      (let* ((status (if (= eshell-last-command-status 0)
+                         ""
+                       (propertize " ✘" 'face 'error)))
+             (userhost (reomacs/eshell--user-host))
+             (time (reomacs/eshell--time))
+             (pwd (reomacs/eshell--pwd)))
+        (concat
+         "╭───────┨" userhost "┠───────>" status "\n"
+         "│🕙" time " : " pwd "\n"
+         "╰─ ")))
+
+    (setq eshell-prompt-function #'reomacs/eshell-prompt)
+    (setq eshell-scroll-show-maximum-output nil)
+
+    (add-hook 'eshell-before-prompt-hook
+              (lambda () (eshell-interactive-print "\n")))
+
+    (setq eshell-prompt-regexp "╰─ ")
+
+    (defun reomacs/eshell-prompt-lines ()
+      "Count the number of lines in the current eshell prompt."
+      (1+ (cl-count ?\n (funcall eshell-prompt-function))))
+
+    (defun reomacs/eshell-recenter-top-bottom-advice (orig-fun &rest args)
+      "Advise `recenter-top-bottom' for eshell: reverse cycle order
+  \(bottom → top → middle) and adjust top for multi-line prompt."
+      (if (derived-mode-p 'eshell-mode)
+          (let* ((prompt-lines (reomacs/eshell-prompt-lines))
+                 (recenter-positions
+                  (reverse
+                   (mapcar (lambda (pos)
+                             (if (or (eq pos 'top) (eql pos 0))
+                                 (1- prompt-lines)
+                               pos))
+                           recenter-positions))))
+            (apply orig-fun args))
+        (apply orig-fun args)))
+
+    (advice-add 'recenter-top-bottom :around
+                #'reomacs/eshell-recenter-top-bottom-advice)
+
+    (defun eshell/clear ()
+      "Clear eshell scrollback, leaving only the next prompt."
+      (let ((inhibit-read-only t))
+        (erase-buffer)))
+
+    (add-hook 'eshell-first-time-mode-hook
+              (lambda ()
+                (setq-local truncate-lines t)))
+#+end_src
+
 * VCS
 
 ** Magit
