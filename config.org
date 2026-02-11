@@ -3257,7 +3257,8 @@ From [[https://github.com/xenodium/agent-shell][agent-shell]]
            (typescript-ts-mode . eglot-ensure)
            (tsx-ts-mode . eglot-ensure)
            (bash-ts-mode . eglot-ensure)
-           (lua-ts-mode . eglot-ensure)))
+           (lua-ts-mode . eglot-ensure)
+           (zig-ts-mode . eglot-ensure)))
 #+end_src
 
 ** Language-Specific
