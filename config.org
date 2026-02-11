@@ -837,7 +837,7 @@ treesit-grammars). Emacs auto-discovers grammars in standard locations.
     (defun reomacs/treesit--build-remap-alist ()
       "Build remap alist only for languages with available grammars."
       (->> '((bash sh) c c++ cmake css dockerfile go html java
-             (javascript js js2) json lua nix python ruby rust toml tsx typescript yaml)
+             (javascript js js2) (json js-json) lua nix python ruby rust toml tsx typescript yaml zig)
            (--mapcat (let* ((modes (if (listp it) it (list it)))
                             (lang (-first-item modes))
                             (ts-mode (intern (format "%s-ts-mode" lang))))
