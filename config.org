@@ -2649,6 +2649,25 @@ DAYS-BACK of nil (no input) uses smart yesterday, 0 means today."
     (pdf-tools-install :no-query))
 #+end_src
 
+* Async
+
+#+begin_src emacs-lisp
+  (use-package async
+    :straight t
+    :config
+    (dired-async-mode 1)
+    (async-bytecomp-package-mode 1)
+
+    ;; dired-async spawns a bare child Emacs that doesn't know about tramp-rpc.
+    ;; Fix: inject load-path so it can find the package, then require it.
+    (setq dired-async-env-variables-regexp
+          "\\`\\(tramp-\\(default\\|connection\\|remote\\)\\|ange-ftp\\)-.*\\|\\`load-path\\'")
+    (advice-add 'async-inject-variables :filter-return
+                (defun reomacs/async-inject-tramp-rpc (form)
+                  "Also load tramp-rpc in async child Emacs."
+                  `(progn ,form (require 'tramp-rpc nil t)))))
+#+end_src
+
 * Dired
 
 - From https://www.rahuljuliato.com/posts/dired-enhanced
