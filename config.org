@@ -2692,11 +2692,11 @@ reconnection prompts every time eshell starts.
                     (org-level-7 . 1.1)
                     (org-level-8 . 1.1)))
       (set-face-attribute (car face) nil
-                          :font "FiraCode Nerd Font"
+                          :font "Maple Mono NF CN"
                           :weight 'bold
                           :height (cdr face)))
     (set-face-attribute 'org-document-title nil
-                        :font "FiraCode Nerd Font"
+                        :font "Maple Mono NF CN"
                         :weight 'bold
                         :height 1.8)
 
