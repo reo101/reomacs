@@ -1940,7 +1940,7 @@ session is ready."
     :custom
     ;; (vertico-scroll-margin 0) ;; Different scroll margin
     (vertico-count 20) ;; Show more candidates
-    ;; (vertico-resize t) ;; Grow and shrink the Vertico minibuffer
+    (vertico-resize nil) ;; Never resize the minibuffer
     (vertico-cycle t) ;; Enable cycling for `vertico-next/previous'
     :init
     (vertico-mode))
@@ -2006,6 +2006,9 @@ If point is after a non-delimiter, delete back to the previous boundary."
   (use-package vertico-posframe
     :straight (:host github :repo "tumashu/vertico-posframe")
     :after (vertico vertico-multiform)
+    :custom
+    (vertico-posframe-font "Maple Mono NF CN-10.8")
+    (posframe-text-scale-factor-function (lambda (_) 0))
     :config
     (vertico-posframe-mode 1))
 
@@ -2014,7 +2017,84 @@ If point is after a non-delimiter, delete back to the previous boundary."
     :init
     (savehist-mode))
 
-  (use-package markdown-mode)
+  (use-package markdown-ts-mode
+    ;; https://github.com/LionyxML/markdown-ts-mode-lab is the development/test
+    ;; repo for the mode, but it doesn't currently ship the .el file.  Until
+    ;; Emacs 31 lands, install the upstream mode directly from Emacs master.
+    :straight (markdown-ts-mode
+               :type git :host github :repo "emacs-mirror/emacs" :branch "master"
+               :files ("lisp/textmodes/markdown-ts-mode.el")
+               :build (:not compile))
+    :commands (markdown-ts-mode markdown-ts-view-mode)
+    :preface
+    ;; Emacs 31 compatibility shims needed by upstream markdown-ts-mode on 30.x.
+    (require 'cl-lib)
+    (require 'treesit)
+    (unless (fboundp 'treesit-declare-unavailable-functions)
+      (defmacro treesit-declare-unavailable-functions () nil))
+    (defvar treesit-auto-install-grammar nil)
+    (defvar treesit-major-mode-remap-alist major-mode-remap-alist)
+    (unless (fboundp 'treesit-ensure-installed)
+      (defun treesit-ensure-installed (lang)
+        "Compatibility shim for Emacs 30."
+        (and (treesit-available-p)
+             (treesit-language-available-p lang))))
+    (unless (fboundp 'treesit-merge-font-lock-feature-list)
+      (defun treesit-merge-font-lock-feature-list (features-list-1 features-list-2)
+        "Compatibility shim for Emacs 30."
+        (let ((result nil)
+              (features-1 (car features-list-1))
+              (features-2 (car features-list-2)))
+          (while (or features-1 features-2)
+            (push (cond
+                   ((and features-1 features-2) (cl-union features-1 features-2))
+                   (features-1 features-1)
+                   (features-2 features-2))
+                  result)
+            (setq features-list-1 (cdr features-list-1)
+                  features-list-2 (cdr features-list-2)
+                  features-1 (car features-list-1)
+                  features-2 (car features-list-2)))
+          (nreverse result))))
+    (unless (fboundp 'with-work-buffer)
+      (defmacro with-work-buffer (&rest body)
+        "Compatibility shim for Emacs 30."
+        `(with-temp-buffer ,@body)))
+    (with-eval-after-load 'html-ts-mode
+      (defvar html-ts-mode--treesit-font-lock-feature-list nil))
+    (with-eval-after-load 'yaml-ts-mode
+      (defvar yaml-ts-mode--font-lock-feature-list nil))
+    (with-eval-after-load 'toml-ts-mode
+      (defvar toml-ts-mode--font-lock-feature-list nil))
+    :init
+    ;; Emacs 30's `treesit-range-rules' does not support the dynamic :embed
+    ;; form used for native code-block parsing in the Emacs 31 mode.
+    (when (< emacs-major-version 31)
+      (setq markdown-ts-fontify-code-blocks-natively nil
+            markdown-ts-enable-code-block-context-mode nil)))
+
+  (use-package markdown-mode
+    :commands markdown-mode)
+
+  (defun reomacs/markdown--treesit-ready-p ()
+    "Return non-nil when Markdown tree-sitter grammars are available."
+    (and (treesit-available-p)
+         (treesit-language-available-p 'markdown)
+         (treesit-language-available-p 'markdown-inline)))
+
+  (defun reomacs/markdown-mode ()
+    "Use `markdown-ts-mode' when available, otherwise fall back to `markdown-mode'."
+    (interactive)
+    (if (reomacs/markdown--treesit-ready-p)
+        (condition-case err
+            (markdown-ts-mode)
+          (error
+           (message "markdown-ts-mode failed (%s); falling back to markdown-mode" err)
+           (markdown-mode)))
+      (markdown-mode)))
+
+  (dolist (pattern '("\\.md\\'" "\\.markdown\\'" "\\.mdx\\'"))
+    (add-to-list 'auto-mode-alist (cons pattern #'reomacs/markdown-mode)))
   ;; (defun markdown-view-mode-maybe ()
   ;;   (cond ((and (eq major-mode 'markdown-mode) buffer-read-only) (markdown-view-mode))
   ;;         ((and (eq major-mode 'markdown-view-mode) (not buffer-read-only)) (markdown-mode))))
