@@ -3429,7 +3429,21 @@ DAYS-BACK of nil (no input) uses smart yesterday, 0 means today."
   (use-package dired
     :straight nil
     :config
-    (setopt dired-dwim-target t))
+    (setopt dired-dwim-target t)
+
+    ;; Preserve text-scale (zoom) when navigating directories
+    (defun reomacs/dired-preserve-text-scale (orig-fun &rest args)
+      "Around advice to preserve `text-scale-mode-amount' across dired navigation."
+      (let ((scale (when (and (derived-mode-p 'dired-mode)
+                              (bound-and-true-p text-scale-mode)
+                              (/= text-scale-mode-amount 0))
+                    text-scale-mode-amount)))
+        (apply orig-fun args)
+        (when (and scale (derived-mode-p 'dired-mode))
+          (text-scale-set scale))))
+
+    (advice-add 'dired-find-file :around #'reomacs/dired-preserve-text-scale)
+    (advice-add 'dired-up-directory :around #'reomacs/dired-preserve-text-scale))
 
   (use-package wdired
     :straight nil  ; built-in
