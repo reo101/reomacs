@@ -270,18 +270,23 @@ These are fetched and built by nix, then added to the PATH.
                 (load-theme 'modus-vivendi-tinted t))))
 #+end_src
 
-** Rainbow Delimiters
 
-#+begin_src emacs-lisp
+** Rainbow Delimiters (legacy)
+
+Note: The tree-sitter based version (treesit-rainbow-delimiters) is now available below.
+This legacy version can be disabled by setting `reomacs/use-legacy-rainbow` to nil.
+
+#+begin_src emacs-lisp :tangle no
   (use-package rainbow-delimiters
     :hook (prog-mode . rainbow-delimiters-mode)
-    :custom-face
-    (rainbow-delimiters-depth-1-face ((t (:foreground "#f7768e"))))
-    (rainbow-delimiters-depth-2-face ((t (:foreground "#e0af68"))))
-    (rainbow-delimiters-depth-3-face ((t (:foreground "#7aa2f7"))))
-    (rainbow-delimiters-depth-4-face ((t (:foreground "#ff9e64"))))
-    (rainbow-delimiters-depth-5-face ((t (:foreground "#9d7cd8"))))
-    (rainbow-delimiters-depth-6-face ((t (:foreground "#7dcfff")))))
+    :config
+    ;; Set faces after theme load to override theme defaults
+    (set-face-attribute 'rainbow-delimiters-depth-1-face nil :foreground "#f7768e")
+    (set-face-attribute 'rainbow-delimiters-depth-2-face nil :foreground "#e0af68")
+    (set-face-attribute 'rainbow-delimiters-depth-3-face nil :foreground "#7aa2f7")
+    (set-face-attribute 'rainbow-delimiters-depth-4-face nil :foreground "#ff9e64")
+    (set-face-attribute 'rainbow-delimiters-depth-5-face nil :foreground "#9d7cd8")
+    (set-face-attribute 'rainbow-delimiters-depth-6-face nil :foreground "#7dcfff"))
 #+end_src
 
 ** Scratch
