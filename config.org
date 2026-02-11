@@ -2500,6 +2500,13 @@ Transient menu for build tool targets (make, just, task, etc.).
 
 * Shells
 
+** GhostEl
+
+#+begin_src emacs-lisp
+  (use-package ghostel
+    :straight (:host github :repo "dakra/ghostel"))
+#+end_src
+
 ** EShell
 
 #+begin_src emacs-lisp
@@ -2579,6 +2586,27 @@ Transient menu for build tool targets (make, just, task, etc.).
     (add-hook 'eshell-first-time-mode-hook
               (lambda ()
                 (setq-local truncate-lines t)))
+#+end_src
+
+*** Strip remote paths from lastdir
+
+Prevent stale TRAMP remote entries in =eshell/lastdir= from triggering
+reconnection prompts every time eshell starts.
+
+#+begin_src emacs-lisp
+  (defun reomacs/eshell-strip-remote-lastdir ()
+    "Remove remote (TRAMP) entries from eshell's last-dir-ring before saving.
+  Prevents stale remote paths in `lastdir' from triggering TRAMP reconnects."
+    (when (and (boundp 'eshell-last-dir-ring) eshell-last-dir-ring)
+      (let ((size (ring-length eshell-last-dir-ring))
+            (idx 0))
+        (while (< idx size)
+          (if (file-remote-p (ring-ref eshell-last-dir-ring idx))
+              (ring-remove eshell-last-dir-ring idx)
+            (setq idx (1+ idx)))))))
+
+  (advice-add 'eshell-write-last-dir-ring :before
+              #'reomacs/eshell-strip-remote-lastdir)
 #+end_src
 
 * VCS
