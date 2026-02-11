@@ -857,16 +857,57 @@ treesit-grammars). Emacs auto-discovers grammars in standard locations.
 
 * Global stuff
 
+** Helpful
+
+Better help buffers with source, references, and docstrings.
+
+#+begin_src emacs-lisp
+  (use-package helpful
+    :straight (:host github :repo "Wilfred/helpful")
+    :bind
+    ([remap describe-function] . helpful-callable)
+    ([remap describe-variable] . helpful-variable)
+    ([remap describe-key]      . helpful-key)
+    ([remap describe-command]  . helpful-command)
+    ([remap describe-symbol]   . helpful-symbol))
+#+end_src
+
+** Emacs Defaults
+
+*** Autosave configuration
+
+Keep autosave files in central directory.
+
 #+begin_src emacs-lisp
   (use-package emacs
     :custom
-    ;;; Autosave configuration - keep autosave files in central directory
     (auto-save-file-name-transforms
      `((".*" ,(expand-file-name "autosave/" user-emacs-directory) t)))
     (auto-save-list-file-prefix
-     (expand-file-name "autosave/.saves-" user-emacs-directory))
+     (expand-file-name "autosave/.saves-" user-emacs-directory)))
+#+end_src
 
-    ;;; Emacs minibuffer configurations.
+*** Backup configuration
+
+Keep backup files in central directory.
+
+#+begin_src emacs-lisp
+  (use-package emacs
+    :custom
+    (backup-directory-alist
+     `(("." . ,(expand-file-name "backup/" user-emacs-directory))))
+    (tramp-backup-directory-alist backup-directory-alist))
+#+end_src
+
+*** Emacs minibuffer configurations
+
+Support opening new minibuffers from inside existing minibuffers.
+Hide commands in =M-x= which do not work in the current mode.
+Do not allow the cursor in the minibuffer prompt.
+
+#+begin_src emacs-lisp
+  (use-package emacs
+    :custom
     ;; Support opening new minibuffers from inside existing minibuffers.
     (enable-recursive-minibuffers t)
     ;; Hide commands in M-x which do not work in the current mode.  Vertico
