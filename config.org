@@ -808,6 +808,16 @@ Using ultra-scroll (best smooth scrolling available on Linux - momentum requires
       (dash-register-info-lookup)))
 #+end_src
 
+** Transient
+
+#+begin_src emacs-lisp
+  (use-package transient
+    :straight nil  ; built-in
+    :config
+    ;; Make Esc close all transient menus (like C-g)
+    (define-key transient-base-map (kbd "<escape>") #'transient-quit-one))
+#+end_src
+
 ** Tree-sitter (built-in treesit)
 
 Emacs 29+ includes native tree-sitter support via the `treesit` module. This
