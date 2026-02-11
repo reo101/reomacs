@@ -321,6 +321,13 @@ This legacy version can be disabled by setting `reomacs/use-legacy-rainbow` to n
     (set-face-attribute 'rainbow-delimiters-depth-6-face nil :foreground "#7dcfff"))
 #+end_src
 
+** ANSI Color (Compilation)
+
+#+begin_src emacs-lisp
+  (use-package ansi-color
+    :hook (compilation-filter . ansi-color-compilation-filter))
+#+end_src
+
 ** Scratch
 
 #+begin_src emacs-lisp
