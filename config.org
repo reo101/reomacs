@@ -64,6 +64,10 @@ M-x eglot RET
 #+begin_src emacs-lisp
   ;;; -*- lexical-binding: t -*-
 
+  ;; Check minimum Emacs version (29+ for treesit, 30+ for some features)
+  (when (< emacs-major-version 29)
+    (error "Reomacs requires Emacs 29+, you have %s" emacs-version))
+
   ;; Strategy: Always load pre-tangled config.el directly.
   ;; This avoids loading built-in org before straight can install a custom version.
   ;; Tangling happens automatically on save (see auto-tangle in config.org).
