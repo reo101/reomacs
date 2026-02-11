@@ -719,14 +719,56 @@ colored one level deeper than the container delimiters."
 
 ** Scrolling
 
+Ultra-scroll disabled for now - testing builtin momentum scrolling.
+
+#+begin_src emacs-lisp :tangle no
+  (use-package ultra-scroll
+    :straight (:host github :repo "jdtsmith/ultra-scroll")
+    :init
+    (setq scroll-conservatively 3
+          scroll-margin 0
+          ;; Reduce GC during scroll for smoother momentum
+          ultra-scroll-gc-percentage 0.8
+          ;; Accumulate scroll events for smoother momentum
+          ultra-scroll-max-accum 5.0)
+    :config
+    (ultra-scroll-mode 1)
+    ;; Re-enable momentum scrolling after ultra-scroll loads
+    ;; (ultra-scroll disables this by default due to tall image issues)
+    (setq pixel-scroll-precision-use-momentum t))
+#+end_src
+
+Using ultra-scroll (best smooth scrolling available on Linux - momentum requires OS support):
+
+#+begin_src emacs-lisp :tangle no
+  ;; Other scrolling configs for reference (not used)
+  (setq scroll-conservatively 3
+        scroll-margin 0
+        pixel-scroll-precision-use-momentum t
+        pixel-scroll-precision-momentum-seconds 0.5
+        pixel-scroll-precision-momentum-tick 0.01
+        pixel-scroll-precision-momentum-ticks 10
+        pixel-scroll-precision-interpolate-mice t)
+  (pixel-scroll-precision-mode 1)
+#+end_src
+
 #+begin_src emacs-lisp
   (use-package ultra-scroll
     :straight (:host github :repo "jdtsmith/ultra-scroll")
     :init
-    (setq scroll-conservatively 0 ; Let ultra-scroll handle it
-          scroll-margin 0)
+    (setq scroll-conservatively 3
+          scroll-margin 0
+          ;; Reduce GC during scroll for smoother experience
+          ultra-scroll-gc-percentage 0.8)
     :config
     (ultra-scroll-mode 1))
+
+  ;; PGTK event latency reduction for niri/Wayland
+  ;; Fixes scroll event batching causing 300ms+ pauses on high-refresh displays
+  (when (eq window-system 'pgtk)
+    (setq pgtk-wait-for-event-timeout 0.0001)  ; 0.1ms instead of default
+    (setq redisplay-dont-pause nil))            ; Allow partial redisplay
+#+end_src
 #+end_src
 
 ** Extra Completion Sources (Cape)
