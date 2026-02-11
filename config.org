@@ -1959,6 +1959,7 @@ Transient menu for build tool targets (make, just, task, etc.).
 #+end_src
 
 * Documentts
+
 ** Org
 
 #+begin_src emacs-lisp
@@ -2636,6 +2637,16 @@ DAYS-BACK of nil (no input) uses smart yesterday, 0 means today."
   (use-package tex
     :straight auctex
     :defer t)
+#+end_src
+
+** PDF
+
+#+begin_src emacs-lisp
+  (use-package pdf-tools
+    :straight (:host github :repo "vedang/pdf-tools")
+    :mode ("\\.pdf\\'" . pdf-view-mode)
+    :config
+    (pdf-tools-install :no-query))
 #+end_src
 
 * Dired
