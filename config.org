@@ -1,41 +1,11 @@
 #+Title: Reomacs
 #+Property: Header-args:emacs-lisp :tangle config.el :lexical t :noweb yes :results silent
 
-* Elsa
-:PROPERTIES:
-:header-args:emacs-lisp: :tangle Elsafile.el :lexical t
-:END:
+* Prep
 
-#+begin_src emacs-lisp
-  ;;; -*- lexical-binding: t -*-
+** Initialization
 
-  ;; Enable Elsa rulesets and extensions for this config.
-  (register-ruleset
-   dead-code
-   style)
-
-  (register-extensions
-   dash)
-#+end_src
-
-First run (CLI, via Eask):
-1. Create an `Eask` file in `~/.config/emacs/` with:
-(source "gnu")
-(source "melpa")
-(depends-on "elsa")
-2. Run:
-eask install-deps
-eask lint elsa
-
-LSP (in Emacs, via eglot):
-1. Install Elsa and eglot:
-M-x package-install RET elsa RET
-M-x package-install RET eglot RET
-2. Register and start the server:
-M-x elsa-lsp-register RET
-M-x eglot RET
-
-* Early Init
+*** Early Init
 :PROPERTIES:
 :header-args:emacs-lisp: :tangle early-init.el :lexical t
 :END:
@@ -56,7 +26,7 @@ M-x eglot RET
   (setq load-prefer-newer t)
 #+end_src
 
-* Init
+*** Init
 :PROPERTIES:
 :header-args:emacs-lisp: :tangle init.el :lexical t
 :END:
@@ -89,21 +59,37 @@ M-x eglot RET
       (warn "Neither config.el nor config.org found in %s" user-emacs-directory))))
 #+end_src
 
-* Prep
-
-** Lexical bindings, duh...
+*** Elsa
+:PROPERTIES:
+:header-args:emacs-lisp: :tangle Elsafile.el :lexical t
+:END:
 
 #+begin_src emacs-lisp
   ;;; -*- lexical-binding: t -*-
+
+  ;; Enable Elsa rulesets and extensions for this config.
+  (register-ruleset
+   dead-code
+   style)
+
+  (register-extensions
+   dash)
 #+end_src
 
-** Macros
+
+*** Macros
 
 #+begin_src emacs-lisp
   (defmacro comment (&rest _body)
     "Ignores all arguments and returns nil.
 Use to comment out blocks of code without disabling them with semicolons."
     nil)
+#+end_src
+
+** Lexical bindings, duh...
+
+#+begin_src emacs-lisp
+  ;;; -*- lexical-binding: t -*-
 #+end_src
 
 ** Auto-Tangle
@@ -117,8 +103,6 @@ Use to comment out blocks of code without disabling them with semicolons."
         (org-babel-tangle))))
 
   (add-hook 'after-save-hook #'reomacs/tangle-config-org)
-  (comment
-   (reomacs/tangle-config-org))
 
   (defvar reomacs/post-init-hooks nil
     "Functions to run after init and after config reload.")
