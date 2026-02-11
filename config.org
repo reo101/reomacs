@@ -3321,6 +3321,90 @@ LSP config:
     (root-markers . ("lua" ".lua-format")))
 #+end_src
 
+*** Zig
+
+#+begin_src emacs-lisp
+  (use-package zig-ts-mode
+    :straight t
+    :defer t)
+#+end_src
+
+LSP config:
+#+begin_src emacs-lisp :tangle lsp/zig.el
+  '((server-name . "zls")
+    (modes . (zig-ts-mode))
+    (root-markers . ("build.zig" "build.zig.zon")))
+#+end_src
+
+*** YAML
+
+#+begin_src emacs-lisp
+  (use-package yaml-mode
+    :straight t
+    :defer t)
+#+end_src
+
+*** Nix
+
+#+begin_src emacs-lisp
+  (use-package nix-mode
+    :straight t
+    :defer t)
+#+end_src
+
+#+begin_src emacs-lisp
+  (use-package nix-ts-mode
+    :straight t
+    :defer t
+    :hook (nix-ts-mode . reomacs/nix-ts-setup-enhanced-highlighting)
+    :init
+    (defun reomacs/nix-ts-setup-enhanced-highlighting ()
+      "Add enhanced font-lock rules to nix-ts-mode, borrowing ideas from nvim-treesitter."
+      ;; Set maximum font-lock level for best highlighting
+      (setq treesit-font-lock-level 4)
+
+      ;; Custom font-lock rules for additional highlighting
+      (setq-local treesit-font-lock-settings
+                  (append treesit-font-lock-settings
+                          (treesit-font-lock-rules
+                           ;; Highlight Nix store paths more distinctly
+                           :language 'nix
+                           :feature 'nix-store-path
+                           :override t
+                           '((spath_expression) @font-lock-constant-face)
+
+                           ;; Highlight deprecated/builtins-like functions
+                           :language 'nix
+                           :feature 'nix-deprecated
+                           :override t
+                           '(((variable_expression name: (identifier) @font-lock-warning-face)
+                              (:match "^(derivation|abort|throw)$" @font-lock-warning-face)))
+
+                           ;; Highlight pkgs, lib, config, inputs commonly used in flakes
+                           :language 'nix
+                           :feature 'nix-flake-commons
+                           :override t
+                           '(((variable_expression name: (identifier) @font-lock-type-face)
+                              (:match "^(pkgs|lib|config|inputs|outputs|self|specialArgs|modules|options)$"
+                                       @font-lock-type-face)))
+
+                           ;; Highlight stdenv, mkDerivation, build* patterns
+                           :language 'nix
+                           :feature 'nix-derivation-patterns
+                           :override t
+                           '(((select_expression
+                               attrpath: (attrpath
+                                          (identifier) @font-lock-function-call-face :anchor))
+                              (:match "^(mkDerivation|stdenv|buildInputs|nativeBuildInputs|propagatedBuildInputs|src|pname|version|meta|description|license|platforms)$"
+                                       @font-lock-function-call-face)))
+
+                           ;; Highlight string interpolation ${...} contents specially
+                           :language 'nix
+                           :feature 'nix-interpolation-content
+                           '((interpolation
+                              (_) @font-lock-variable-use-face)))))))
+#+end_src
+
 * Misc
 
 ** Anki
