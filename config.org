@@ -1790,6 +1790,55 @@ If point is after a non-delimiter, delete back to the previous boundary."
     (envrc-global-mode))
 #+end_src
 
+** Compile
+
+*** Dependencies
+
+**** Modern file/directory API
+
+#+begin_src emacs-lisp
+  (use-package f)
+#+end_src
+
+**** String manipulation library
+
+#+begin_src emacs-lisp
+  (use-package s)
+#+end_src
+
+*** transient-compile
+
+Transient menu for build tool targets (make, just, task, etc.).
+
+#+begin_src emacs-lisp
+  ;; Override transient-compile's shell runner to properly handle direnv PATH
+  (defun reomacs/transient-compile-shell-run (command)
+    "Run shell command with proper PATH from direnv (overrides original)."
+    (transient-compile--log "Running command: %s" command)
+    ;; Get PATH from buffer-local value set by envrc
+    (let* ((path-elem (seq-find (lambda (s) (string-prefix-p "PATH=" s))
+                                process-environment))
+           (path-env (when path-elem (substring path-elem 5)))
+           (shell-cmd (if path-env
+                         (format "env 'PATH=%s' %s" path-env command)
+                       command)))
+      (transient-compile--log "Shell cmd: %s" shell-cmd)
+      (with-temp-buffer
+        (let* ((process-environment (cons "LC_ALL=C" process-environment))
+               (exit-code (process-file-shell-command shell-cmd nil (current-buffer) nil))
+               (output (string-trim (or (buffer-string) ""))))
+          (transient-compile--log "Exit=%d output=%s" exit-code output)
+          output))))
+
+  (use-package transient-compile
+    :straight (:host github :repo "gavv/transient-compile")
+    :bind ("C-c p c" . transient-compile)
+    :config
+    ;; Override the shell run function to use direnv's PATH
+    (advice-add 'transient-compile--shell-run
+                :override #'reomacs/transient-compile-shell-run))
+#+end_src
+
 * VCS
 
 ** Magit
