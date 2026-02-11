@@ -1451,6 +1451,42 @@ Do not allow the cursor in the minibuffer prompt.
 
 * Editing
 
+** Input Method (fcitx5)
+
+#+begin_src emacs-lisp
+  ;; Upstream fcitx.el unconditionally requires dbus, so only load it when
+  ;; this Emacs build ships with D-Bus support.
+  (use-package fcitx
+    :if (and (eq system-type 'gnu/linux)
+             (locate-library "dbus"))
+    :straight (:host github :repo "cute-jumper/fcitx.el")
+    :defer t
+    :commands (fcitx-aggressive-setup)
+    :preface
+    (defvar reomacs/fcitx-setup-done nil
+      "Whether fcitx.el has been initialized for this Emacs session.")
+
+    (defun reomacs/setup-fcitx (&optional frame)
+      "Initialize fcitx.el once a real frame exists.
+
+Avoids D-Bus-activating fcitx5 during daemon startup before the Wayland
+session is ready."
+      (when (and (not reomacs/fcitx-setup-done)
+                 (or frame (not (daemonp))))
+        (if (executable-find fcitx-remote-command)
+            (progn
+              (setq reomacs/fcitx-setup-done t)
+              (fcitx-aggressive-setup))
+          (message "fcitx.el skipped because %s is unavailable" fcitx-remote-command))))
+    :hook ((emacs-startup . reomacs/setup-fcitx)
+           (server-after-make-frame . reomacs/setup-fcitx))
+    :init
+    (setq fcitx-remote-command "fcitx5-remote"
+          fcitx-use-dbus 'fcitx5)
+    :config
+    nil)
+#+end_src
+
 ** Modal Editing
 
 *** Evil
@@ -1752,6 +1788,19 @@ Do not allow the cursor in the minibuffer prompt.
     (evil-keypad-global-mode 1)
     ;; SPC w -> C-c w, so bind C-c w to evil-window-map
     (define-key mode-specific-map (kbd "w") evil-window-map))
+#+end_src
+
+** Window Management
+
+#+begin_src emacs-lisp
+  (use-package zoom
+    :straight (:host github :repo "cyrus-and/zoom")
+    :bind
+    ([remap balance-windows] . zoom)
+    :custom
+    (zoom-size '(0.618 . 0.618))
+    :config
+    (zoom-mode 1))
 #+end_src
 
 ** Which-key
