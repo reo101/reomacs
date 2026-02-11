@@ -775,6 +775,7 @@ Using ultra-scroll (best smooth scrolling available on Linux - momentum requires
 
 #+begin_src emacs-lisp
   (use-package cape
+    :demand t
     :config
     ;; Create a combined capf that merges dabbrev with other backends
     (defun reomacs/cape-capf-setup ()
@@ -795,7 +796,12 @@ Using ultra-scroll (best smooth scrolling available on Linux - momentum requires
 - https://github.com/magnars/dash.el
 
 #+begin_src emacs-lisp
+  ;; Dash must be loaded early for macros (->>, --map, etc.)
+  ;; eval-and-compile ensures macros available at compile & runtime
+  (eval-and-compile (require 'dash))
+
   (use-package dash
+    :demand t
     :config
     (global-dash-fontify-mode)
     (with-eval-after-load 'info-look
