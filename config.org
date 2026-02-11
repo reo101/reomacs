@@ -1748,10 +1748,37 @@ If point is after a non-delimiter, delete back to the previous boundary."
        (project-find-dir "Find directory")
        (project-eshell "Eshell")
        (project-vc-dir "VC")))
+    :config
+    ;; Recognize jj (Jujutsu) repos as projects
+    ;; project-vc-extra-root-markers only works for VC-backed projects,
+    ;; so we use project-find-functions for jj-only repos
+    (defun reomacs/project-try-jj (dir)
+      "Treat a directory containing .jj/ as a project root."
+      (let ((root (locate-dominating-file dir ".jj")))
+        (when root
+          ;; Use 'transient project type: root-only, no VC integration
+          (cons 'transient (expand-file-name root)))))
+
+    ;; Add at front so jj is detected before falling back to other methods
+    (add-hook 'project-find-functions #'reomacs/project-try-jj)
+
+    ;; Helper to bulk-add all jj projects under a directory
+    (defun reomacs/project-remember-jj-projects (dir)
+      "Find and remember all jj repos under DIR as projects."
+      (interactive "DDirectory: ")
+      (let ((count 0))
+        (dolist (jj-dir (directory-files-recursively dir "^\\.jj$" t))
+          (let ((project-root (file-name-directory jj-dir)))
+            (when (file-directory-p project-root)
+              (project-remember-project (cons 'transient project-root))
+              (cl-incf count)
+              (message "Added project: %s" project-root))))
+        (message "Added %d jj projects" count)))
     :bind
     ("C-c p f" . project-find-file)
     ("C-c p p" . project-switch-project)
-    ("C-c p d" . project-find-dir))
+    ("C-c p d" . project-find-dir)
+    ("C-c p a" . reomacs/project-remember-jj-projects))
 #+end_src
 
 ** Direnv
