@@ -1309,7 +1309,8 @@ DELTA is the pixel scroll amount."
 
 #+begin_src emacs-lisp
   (use-package transient
-    :straight nil  ; built-in
+    :straight t
+    :demand t
     :config
     ;; Make Esc close all transient menus (like C-g)
     (define-key transient-base-map (kbd "<escape>") #'transient-quit-one))
@@ -1350,6 +1351,38 @@ treesit-grammars). Emacs auto-discovers grammars in standard locations.
 
     ;; Treesit font-lock level (3=balanced, 4=maximum - level 4 can be slow)
     (setq treesit-font-lock-level 3))
+
+  ;; prism.el: depth-based colorization for keywords (:keyword) matching fennel/neovim rainbow-delimiters
+  ;; (use-package prism
+  ;;   :straight (:host github :repo "alphapapa/prism.el")
+  ;;   :hook (emacs-lisp-mode . (lambda ()
+  ;;                              (when (display-graphic-p)
+  ;;                                (prism-mode 1))))
+  ;;   :config
+  ;;   ;; Set colors matching your rainbow-delimiters palette
+  ;;   (prism-set-colors
+  ;;    :num 16
+  ;;    :colors (list "#f7768e"  ; red
+  ;;                  "#e0af68"  ; orange
+  ;;                  "#7aa2f7"  ; blue
+  ;;                  "#ff9e64"  ; peach
+  ;;                  "#9d7cd8"  ; purple
+  ;;                  "#7dcfff"  ; cyan
+  ;;                  "#50fa7b"  ; green
+  ;;                  "#ffb86c"  ; yellow
+  ;;                  "#bd93f9"  ; pink
+  ;;                  "#8be9fd"  ; light blue
+  ;;                  "#f1fa8c"  ; light yellow
+  ;;                  "#ff5555"  ; light red
+  ;;                  "#6272a4"  ; gray
+  ;;                  "#44475a"  ; dark gray
+  ;;                  "#282a36"  ; dark
+  ;;                  "#ffffff")) ; white
+  ;;   ;; Colorize symbols/keywords by depth
+  ;;   (setq prism-symbols t)
+  ;;   ;; Don't colorize strings/comments by depth (let font-lock handle those)
+  ;;   (setq prism-comments nil)
+  ;;   (setq prism-strings nil))
 #+end_src
 
 * Global stuff
