@@ -3830,6 +3830,71 @@ function. If any files were created by this advice, it then calls
     (nameless-private-prefix t))
 #+end_src
 
+* Communication
+
+** Matrix (ement)
+
+#+begin_src emacs-lisp
+  (use-package ement
+    :straight (:host github :repo "alphapapa/ement.el")
+    :commands (ement-connect ement-list-rooms)
+    :preface
+    (defcustom reomacs/ement-user-id nil
+      "Default Matrix user ID used by `reomacs/ement-login'."
+      :type '(choice (const :tag "Prompt each time" nil) string)
+      :group 'applications)
+
+    (defcustom reomacs/ement-auth-host nil
+      "Auth-source host used for Matrix credentials.
+When nil, derive it from the server part of the Matrix user ID."
+      :type '(choice (const :tag "Derive from Matrix ID" nil) string)
+      :group 'applications)
+
+    (defcustom reomacs/ement-uri-prefix nil
+      "Optional Matrix API URI prefix passed to `ement-connect'.
+Set this when the API endpoint differs from the Matrix ID server name."
+      :type '(choice (const :tag "Use homeserver discovery" nil) string)
+      :group 'applications)
+
+    (defvar reomacs/ement-user-id-history nil
+      "Minibuffer history for Matrix user IDs.")
+
+    (defun reomacs/ement--matrix-host (user-id)
+      "Return the server part of Matrix USER-ID."
+      (when (string-match (rx bos "@" (+ (not (any ":"))) ":" (group (+ nonl)) eos)
+                          user-id)
+        (match-string 1 user-id)))
+
+    (defun reomacs/ement-login (&optional prompt-for-user)
+      "Connect to Matrix using credentials from `auth-source'.
+With PROMPT-FOR-USER, prompt even when `reomacs/ement-user-id' is set."
+      (interactive "P")
+      (require 'auth-source)
+      (let* ((user-id (if (and reomacs/ement-user-id (not prompt-for-user))
+                          reomacs/ement-user-id
+                        (read-string "Matrix user ID: "
+                                     reomacs/ement-user-id
+                                     'reomacs/ement-user-id-history)))
+             (auth-host (or reomacs/ement-auth-host
+                            (reomacs/ement--matrix-host user-id)))
+             ;; Example ~/.authinfo.gpg entry:
+             ;; machine matrix.example.com login @alice:matrix.example.com password secret
+             (password (and auth-host
+                            (auth-source-pick-first-password
+                             :host auth-host
+                             :user user-id))))
+        (unless auth-host
+          (user-error "Could not derive Matrix auth host from %s" user-id))
+        (unless password
+          (user-error "No Matrix credentials found for host %s and user %s"
+                      auth-host user-id))
+        (ement-connect :user-id user-id
+                       :password password
+                       :uri-prefix reomacs/ement-uri-prefix)))
+    :bind
+    ("C-c m" . reomacs/ement-login))
+#+end_src
+
 * LLMs
 
 ** gptel
