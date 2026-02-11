@@ -3405,6 +3405,279 @@ LSP config:
                               (_) @font-lock-variable-use-face)))))))
 #+end_src
 
+**** Translated nvim-treesitter queries (for reference)
+
+The following is a translation of nvim-treesitter's =highlights.scm= for Nix into Emacs =treesit-font-lock-rules= format.
+Use this as a reference for creating custom highlighting rules.
+
+#+begin_src emacs-lisp
+  ;; TRANSLATION GUIDE:
+  ;; nvim @capture           -> Emacs @face-name
+  ;; (#eq? @capture "val")    -> (:equal @capture "val")
+  ;; (#any-of? @cap "a" "b")  -> (:match "^(a|b)$" @cap)
+  ;; (#not-eq? @cap "val")    -> No direct equivalent (need custom predicate)
+  ;; @variable.member        -> @font-lock-property-use-face
+  ;; @function.call           -> @font-lock-function-call-face
+  ;; @function.builtin        -> @font-lock-builtin-face
+  ;; @constant.builtin        -> @font-lock-constant-face
+  ;; @keyword.exception      -> @font-lock-keyword-face
+  ;; @string.special.path    -> @font-lock-constant-face (or custom)
+  ;; @string.special.url     -> @font-lock-constant-face (or custom)
+  ;; @punctuation.delimiter   -> @font-lock-delimiter-face
+  ;; @punctuation.bracket    -> @font-lock-bracket-face
+  ;; @punctuation.special    -> @font-lock-punctuation-face
+  ;; @variable.parameter      -> @font-lock-variable-name-face
+  ;; @variable.parameter.builtin -> @font-lock-variable-name-face
+  ;; @operator                -> @font-lock-operator-face
+  ;; @number / @number.float  -> @font-lock-number-face
+  ;; @keyword.conditional     -> @font-lock-keyword-face
+  ;; @keyword.operator       -> @font-lock-keyword-face
+  ;; @keyword.import          -> @font-lock-keyword-face
+  ;; @boolean                 -> @font-lock-constant-face
+  ;; @comment / @spell        -> @font-lock-comment-face
+  ;; @string / @string.escape -> @font-lock-string-face / @font-lock-escape-face
+
+  ;; === BASIC KEYWORDS ===
+  ;; nvim: [ "assert" "in" "inherit" "let" "rec" "with" ] @keyword
+  '( ;; Already covered by nix-ts-mode feature 'keyword
+  )
+
+  ;; === IF/THEN/ELSE ===
+  ;; nvim: [ "if" "then" "else" ] @keyword.conditional
+  '( ;; Already covered by nix-ts-mode feature 'keyword
+  )
+
+  ;; === FIELD ACCESS DEFAULT (or) ===
+  ;; nvim: "or" @keyword.operator
+  '( ;; Already covered by nix-ts-mode ("or" highlighted as keyword)
+  )
+
+  ;; === COMMENTS ===
+  ;; nvim: (comment) @comment @spell
+  '( ;; Already covered by nix-ts-mode feature 'comment
+  )
+
+  ;; === STRINGS ===
+  ;; nvim: (string_fragment) @string
+  ;;       (string_expression "\"" @string)
+  ;;       (indented_string_expression "''" @string)
+  '( ;; Already covered by nix-ts-mode feature 'string
+  )
+
+  ;; === PATHS AND URLS ===
+  ;; nvim:
+  ;;   [
+  ;;     (path_expression)
+  ;;     (hpath_expression)
+  ;;     (spath_expression)
+  ;;   ] @string.special.path
+  ;;   (uri_expression) @string.special.url
+  (treesit-font-lock-rules
+  :language 'nix
+  :feature 'nix-paths-urls
+  :override t
+  '((path_expression) @font-lock-constant-face
+  (hpath_expression) @font-lock-constant-face
+  (spath_expression) @font-lock-constant-face
+  (uri_expression) @font-lock-constant-face))
+
+  ;; === ESCAPE SEQUENCES ===
+  ;; nvim: (escape_sequence) @string.escape
+  '( ;; Already covered by nix-ts-mode feature 'string
+  )
+
+  ;; === DELIMITERS ===
+  ;; nvim: [ "." ";" ":" "," ] @punctuation.delimiter
+  '( ;; Already covered by nix-ts-mode feature 'delimiter
+  )
+
+  ;; === BRACKETS ===
+  ;; nvim: [ "(" ")" "[" "]" "{" "}" ] @punctuation.bracket
+  '( ;; Already covered by nix-ts-mode feature 'bracket
+  )
+
+  ;; === FUNCTION PARAMETERS (formals) ===
+  ;; nvim:
+  ;;   (formal
+  ;;     name: (identifier) @variable.parameter
+  ;;     "?"? @operator)
+  '( ;; Already covered by nix-ts-mode feature 'parameter
+  )
+
+  ;; === ELLIPSES (...) ===
+  ;; nvim: (ellipses) @variable.parameter.builtin
+  '( ;; Already covered by nix-ts-mode feature 'ellipses
+  )
+
+  ;; === UNIVERSAL PARAMETER (function argument) ===
+  ;; nvim:
+  ;;   (function_expression
+  ;;     universal: (identifier) @variable.parameter
+  ;;     ":" @punctuation.special)
+  '( ;; Already covered by nix-ts-mode features 'parameter and 'punctuation
+  )
+
+  ;; === FUNCTION CALLS ===
+  ;; nvim:
+  ;;   (apply_expression
+  ;;     function: (variable_expression
+  ;;       name: (identifier) @function.call))
+  '( ;; Already covered by nix-ts-mode feature 'function-call
+  )
+
+  ;; === BASIC IDENTIFIERS ===
+  ;; nvim: (variable_expression) @variable
+  '( ;; Already covered by nix-ts-mode feature 'variable
+  )
+
+  ;; === IMPORT KEYWORD ===
+  ;; nvim:
+  ;;   (variable_expression
+  ;;     name: (identifier) @keyword.import
+  ;;     (#eq? @keyword.import "import"))
+  (treesit-font-lock-rules
+  :language 'nix
+  :feature 'nix-import-keyword
+  :override t
+  '(((variable_expression name: (identifier) @font-lock-keyword-face)
+  (:equal @font-lock-keyword-face "import"))))
+
+  ;; === BOOLEANS ===
+  ;; nvim:
+  ;;   (variable_expression
+  ;;     name: (identifier) @boolean
+  ;;     (#any-of? @boolean "true" "false"))
+  '( ;; Already covered by nix-ts-mode feature 'constant (true/false highlighted as constant)
+  )
+
+  ;; === STRING INTERPOLATION ===
+  ;; nvim:
+  ;;   (interpolation
+  ;;     "${" @punctuation.special
+  ;;     (_)
+  ;;     "}" @punctuation.special) @none
+  '( ;; Already covered by nix-ts-mode feature 'string
+  )
+
+  ;; === SELECT EXPRESSION (attrpath access) ===
+  ;; nvim:
+  ;;   (select_expression
+  ;;     expression: (_) @_expr
+  ;;     attrpath: (attrpath
+  ;;       attr: (identifier) @variable.member)
+  ;;     (#not-eq? @_expr "builtins"))
+  ;;
+  ;; NOTE: Emacs doesn't have a direct "not-equal" predicate.
+  ;; The nix-ts-mode package handles this via feature 'property
+  '( ;; Already covered by nix-ts-mode feature 'property
+  )
+
+  ;; === ATTRSET BINDING IDENTIFIERS ===
+  ;; nvim:
+  ;;   (attrset_expression
+  ;;     (binding_set
+  ;;       (binding
+  ;;         .
+  ;;         (attrpath
+  ;;           (identifier) @variable.member))))
+  ;;   (rec_attrset_expression
+  ;;     (binding_set
+  ;;       (binding
+  ;;         .
+  ;;         (attrpath
+  ;;           (identifier) @variable.member))))
+  '( ;; Already covered by nix-ts-mode feature 'property
+  )
+
+  ;; === FUNCTION CALLS VIA SELECT EXPRESSION ===
+  ;; nvim:
+  ;;   function: (select_expression
+  ;;     attrpath: (attrpath
+  ;;       attr: (identifier) @function.call .))
+  '( ;; Already covered by nix-ts-mode feature 'function-call
+  )
+
+  ;; === BUILTIN FUNCTIONS (with builtins prefix) ===
+  ;; nvim:
+  ;;   (select_expression
+  ;;     expression: (variable_expression
+  ;;       name: (identifier) @_id)
+  ;;     attrpath: (attrpath
+  ;;       attr: (identifier) @function.builtin)
+  ;;     (#eq? @_id "builtins"))
+  '( ;; Already covered by nix-ts-mode feature 'builtin
+  )
+
+  ;; === BUILTIN FUNCTIONS (without builtins prefix) ===
+  ;; nvim: (variable_expression name: (identifier) @function.builtin (#any-of? @function.builtin ...))
+  ;; This is a long list of builtin functions. nix-ts-mode covers this in feature 'builtin
+  '( ;; Already covered by nix-ts-mode feature 'builtin
+  )
+
+  ;; === CONSTANTS ===
+  ;; nvim:
+  ;;   (variable_expression
+  ;;     name: (identifier) @constant.builtin
+  ;;     (#any-of? @constant.builtin
+  ;;       "builtins" "currentSystem" "currentTime" "langVersion" "nixPath" "nixVersion" "null" "storeDir"))
+  '( ;; Already covered by nix-ts-mode feature 'constant
+  )
+
+  ;; === FUNCTION DEFINITION ===
+  ;; nvim:
+  ;;   (binding
+  ;;     attrpath: (attrpath
+  ;;       attr: (identifier) @function)
+  ;;     expression: (function_expression))
+  '( ;; Already covered by nix-ts-mode feature 'definition
+  )
+
+  ;; === UNARY OPERATORS ===
+  ;; nvim: (unary_expression operator: _ @operator)
+  '( ;; Already covered by nix-ts-mode feature 'operator
+  )
+
+  ;; === BINARY OPERATORS ===
+  ;; nvim: (binary_expression operator: _ @operator)
+  '( ;; Already covered by nix-ts-mode feature 'operator
+  )
+
+  ;; === OPERATORS [= @ ?] ===
+  ;; nvim: [ "=" "@" "?" ] @operator
+  '( ;; Already covered by nix-ts-mode feature 'operator
+  )
+
+  ;; === INTEGERS ===
+  ;; nvim:
+  ;;   [
+  ;;     (unary_expression "-" (integer_expression))
+  ;;     (integer_expression)
+  ;;   ] @number
+  '( ;; Already covered by nix-ts-mode feature 'number
+  )
+
+  ;; === FLOATS ===
+  ;; nvim:
+  ;;   [
+  ;;     (unary_expression "-" (float_expression))
+  ;;     (float_expression)
+  ;;   ] @number.float
+  '( ;; Already covered by nix-ts-mode feature 'number
+  )
+
+  ;; === EXCEPTIONS (abort, throw) ===
+  ;; nvim:
+  ;;   (variable_expression
+  ;;     name: (identifier) @keyword.exception
+  ;;     (#any-of? @keyword.exception "abort" "throw"))
+  (treesit-font-lock-rules
+  :language 'nix
+  :feature 'nix-exceptions
+  :override t
+  '(((variable_expression name: (identifier) @font-lock-warning-face)
+  (:match "^(abort|throw)$" @font-lock-warning-face))))
+#+end_src
+
 * Misc
 
 ** Anki
