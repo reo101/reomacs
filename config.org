@@ -2739,8 +2739,13 @@ DAYS-BACK of nil (no input) uses smart yesterday, 0 means today."
 
   ;;   (add-hook 'dired-after-readin-hook #'reomacs/dired-icons-add-icons))
 
+  (use-package dired
+    :straight nil
+    :config
+    (setopt dired-dwim-target t))
+
   (use-package wdired
-    :ensure nil
+    :straight nil  ; built-in
     :config
     (setopt wdired-allow-to-change-permissions t
             wdired-allow-to-redirect-links t))
@@ -2750,10 +2755,186 @@ DAYS-BACK of nil (no input) uses smart yesterday, 0 means today."
     ;;   (evil-define-key 'normal dired-mode-map
     ;;     "r" 'wdired-change-to-wdired-mode)))
 
+  (use-package dired-subtree
+    :straight t
+    :bind (:map dired-mode-map
+           ("TAB" . dired-subtree-toggle))
+    :config
+    ;; Use buffer-local switches for subtrees instead of global default
+    (advice-add 'dired-subtree--readin :around
+                (lambda (orig-fun dir-name)
+                  (let ((dired-listing-switches (or dired-actual-switches
+                                                    dired-listing-switches)))
+                    (funcall orig-fun dir-name))))
+
+    (with-eval-after-load 'nerd-icons-dired
+      ;; Remove nerd-icons-dired's built-in full-buffer-refresh advice on subtree ops
+      (advice-remove 'dired-subtree-toggle #'nerd-icons-dired--refresh-advice)
+      (advice-remove 'dired-subtree-remove #'nerd-icons-dired--refresh-advice)
+      (advice-remove 'dired-subtree-cycle #'nerd-icons-dired--refresh-advice)
+
+      ;; Insert: add icons only to the new subtree region
+      (advice-add 'dired-subtree-insert :after
+                  (lambda (&rest _)
+                    (when nerd-icons-dired-mode
+                      (save-excursion
+                        (forward-line 1)
+                        (-when-let (ov (dired-subtree--get-ov))
+                          (let ((beg (overlay-start ov))
+                                (end (overlay-end ov))
+                                (inhibit-read-only t))
+                            (goto-char beg)
+                            (while (and (not (eobp)) (< (point) end))
+                              (when (dired-move-to-filename nil)
+                                (let ((file (dired-get-filename 'relative 'noerror)))
+                                  (when file
+                                    (let ((icon (if (file-directory-p file)
+                                                    (funcall nerd-icons-dired-dir-icon-function file)
+                                                  (funcall nerd-icons-dired-file-icon-function file))))
+                                      (if (member file '("." ".."))
+                                          (nerd-icons-dired--add-overlay (dired-move-to-filename)
+                                                                         nerd-icons-dired-special-prefix-string)
+                                        (nerd-icons-dired--add-overlay (dired-move-to-filename)
+                                                                       (concat icon nerd-icons-dired-infix-string)))))))
+                              (forward-line 1))))))))
+
+      ;; Remove: clean up icon overlays in the subtree before text deletion
+      (advice-add 'dired-subtree-remove :before
+                  (lambda (&rest _)
+                    (when nerd-icons-dired-mode
+                      (-when-let (ov (dired-subtree--get-ov))
+                        (mapc #'delete-overlay
+                              (nerd-icons-dired--overlays-in
+                               (overlay-start ov) (overlay-end ov)))))))))
+
+  (use-package diredfl
+    :straight t
+    :hook (dired-mode . diredfl-mode))
+
   (use-package nerd-icons-dired
     :straight t
     :hook
     (dired-mode . nerd-icons-dired-mode))
+#+end_src
+
+** Column visibility
+
+Toggle individual columns in dired via overlays with =invisible= property.
+All columns are always present in the buffer (=-alh= switches); visibility
+is controlled per-column through =buffer-invisibility-spec=.
+
+#+begin_src emacs-lisp
+  (setq dired-listing-switches "-alh")
+
+  (defvar reomacs/dired-column-specs
+    '((perms . reomacs/dired-hide-perms)
+      (links . reomacs/dired-hide-links)
+      (owner . reomacs/dired-hide-owner)
+      (group . reomacs/dired-hide-group)
+      (size  . reomacs/dired-hide-size)
+      (date  . reomacs/dired-hide-date))
+    "Alist mapping column names to invisibility spec symbols.")
+
+  (defconst reomacs/dired-column-re
+    (concat
+     "."                                           ; mark
+     "\\( [-drwxlsStT]\\{10\\}[.+@]?\\)"           ; 1: perms (no space in ACL class)
+     "\\( *[0-9]+\\)"                              ; 2: links (0+ spaces for high counts)
+     "\\( +[^ ]+\\)"                               ; 3: owner
+     "\\( +[^ ]+\\)"                               ; 4: group
+     "\\( +[^ ]+\\)"                               ; 5: size
+     )
+    "Regex matching ls -l columns (perms through size).
+Date region is from end of size match to `dired-move-to-filename'.")
+
+  (defun reomacs/dired--add-column-overlays-in-region (beg end)
+    "Add invisible overlays for each column on file lines between BEG and END."
+    (save-excursion
+      (goto-char beg)
+      (while (and (not (eobp)) (< (point) end))
+        (let ((fn-pos (save-excursion (dired-move-to-filename nil))))
+          (when fn-pos
+            (beginning-of-line)
+            (when (looking-at reomacs/dired-column-re)
+              (let ((col-names '(perms links owner group size)))
+                (cl-loop for name in col-names
+                         for i from 1
+                         do (let ((ov (make-overlay (match-beginning i)
+                                                    (match-end i))))
+                              (overlay-put ov 'invisible
+                                           (alist-get name reomacs/dired-column-specs))
+                              (overlay-put ov 'reomacs/dired-column t)
+                              (overlay-put ov 'evaporate t))))
+              (let ((ov (make-overlay (match-end 5) fn-pos)))
+                (overlay-put ov 'invisible
+                             (alist-get 'date reomacs/dired-column-specs))
+                (overlay-put ov 'reomacs/dired-column t)
+                (overlay-put ov 'evaporate t)))))
+        (forward-line 1))))
+
+  (defun reomacs/dired--add-column-overlays ()
+    "Add column overlays to the entire dired buffer."
+    (reomacs/dired--add-column-overlays-in-region (point-min) (point-max)))
+
+  (add-hook 'dired-after-readin-hook #'reomacs/dired--add-column-overlays)
+
+  (with-eval-after-load 'dired-subtree
+    (add-hook 'dired-subtree-after-insert-hook
+              (lambda ()
+                (-when-let (ov (dired-subtree--get-ov))
+                  (reomacs/dired--add-column-overlays-in-region
+                   (overlay-start ov) (overlay-end ov))))))
+
+  (defun reomacs/dired--column-visible-p (column)
+    "Return non-nil if COLUMN is currently visible."
+    (let ((spec (alist-get column reomacs/dired-column-specs)))
+      (not (or (eq buffer-invisibility-spec t)
+               (memq spec buffer-invisibility-spec)))))
+
+  (defun reomacs/dired-toggle-column (column)
+    "Toggle visibility of COLUMN in the current dired buffer."
+    (let ((spec (alist-get column reomacs/dired-column-specs)))
+      (if (reomacs/dired--column-visible-p column)
+          (add-to-invisibility-spec spec)
+        (remove-from-invisibility-spec spec))
+      (force-window-update (current-buffer))))
+
+  (require 'transient)
+
+  (defun reomacs/dired-toggle-perms ()
+    "Toggle permissions column." (interactive)
+    (reomacs/dired-toggle-column 'perms))
+  (defun reomacs/dired-toggle-links ()
+    "Toggle links column." (interactive)
+    (reomacs/dired-toggle-column 'links))
+  (defun reomacs/dired-toggle-owner ()
+    "Toggle owner column." (interactive)
+    (reomacs/dired-toggle-column 'owner))
+  (defun reomacs/dired-toggle-group ()
+    "Toggle group column." (interactive)
+    (reomacs/dired-toggle-column 'group))
+  (defun reomacs/dired-toggle-size ()
+    "Toggle size column." (interactive)
+    (reomacs/dired-toggle-column 'size))
+  (defun reomacs/dired-toggle-date ()
+    "Toggle date column." (interactive)
+    (reomacs/dired-toggle-column 'date))
+
+  (transient-define-prefix reomacs/dired-detail-menu ()
+    "Dired column visibility."
+    :transient-suffix 'transient--do-stay
+    ["Columns"
+     ("p" "Permissions" reomacs/dired-toggle-perms)
+     ("l" "Links"       reomacs/dired-toggle-links)
+     ("o" "Owner"       reomacs/dired-toggle-owner)
+     ("g" "Group"       reomacs/dired-toggle-group)
+     ("s" "Size"        reomacs/dired-toggle-size)
+     ("d" "Date"        reomacs/dired-toggle-date)
+     ("RET" "Done"      transient-quit-one)])
+
+  (with-eval-after-load 'evil
+    (evil-define-key 'normal dired-mode-map
+      ")" #'reomacs/dired-detail-menu))
 #+end_src
 
 ** WDired new files
