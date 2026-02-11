@@ -2275,12 +2275,12 @@ From [[https://github.com/xenodium/agent-shell][agent-shell]]
      '(:python (:analysis (:autoSearchPaths t :useLibraryCodeForTypes t))
        :rust-analyzer (:procMacro (:enable t)
                        :checkOnSave t
-                       :files (:excludeDirs [".direnv"])
+                       :files (:excludeDirs '(".direnv"))
                        :assist (:importGranularity "module"
                                 :importPrefix "self")
                        :cargo (:loadOutDirsFromCheck t
                                :features "all"))
-       :pylsp (:configurationSources ["flake8"])))
+       :pylsp (:configurationSources '("flake8"))))
 
     :config
     ;; Set rust-analyzer command dynamically (with lspmux support)
