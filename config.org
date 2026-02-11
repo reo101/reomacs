@@ -3217,11 +3217,13 @@ From [[https://coredumped.dev/2025/06/18/making-tramp-go-brrrr.][Making TRAMP go
   (setq remote-file-name-inhibit-locks t
         tramp-use-scp-direct-remote-copying t
         remote-file-name-inhibit-auto-save-visited t
-        tramp-verbose 1
-        tramp-ssh-controlmaster-options nil
+        tramp-verbose 6
         tramp-remote-shell "/bin/sh"
-        tramp-ssh-controlmaster-options "-o ControlMaster=auto -o ControlPersist=no"
         tramp-use-ssh-controlmaster-options nil)
+
+  ;; Fail fast on unreachable hosts instead of hanging for 30-60s.
+  ;; TRAMP-level timeout (seconds to wait for connection).
+  (setq tramp-connection-timeout 5)
 #+end_src
 
 ** Copy Size Limit
@@ -3229,8 +3231,7 @@ From [[https://coredumped.dev/2025/06/18/making-tramp-go-brrrr.][Making TRAMP go
 Inline transfer is faster for files up to ~2MB. Default is 10KB.
 
 #+begin_src emacs-lisp
-  (setq tramp-copy-size-limit (* 1024 1024)  ;; 1MB
-        tramp-verbose 2)
+  (setq tramp-copy-size-limit (* 1024 1024))  ;; 1MB
 #+end_src
 
 ** Direct Async Process
@@ -3319,4 +3320,124 @@ Memoize expensive TRAMP operations to avoid repeated remote calls.
           magit-toplevel-cache nil
           vc-git-root-cache nil)
     (message "TRAMP caches reset"))
+#+end_src
+
+** TRAMP RPC
+
+High-performance TRAMP backend using a Rust binary server over MessagePack-RPC/SSH.
+See [[https://github.com/ArthurHeymans/emacs-tramp-rpc][emacs-tramp-rpc]].
+
+#+begin_src emacs-lisp
+  (use-package msgpack)
+
+  ;; Fallback: proxy sudo through SSH for hosts without passwordless sudo.
+  ;; Use `/sudo:root@HOST:/path` — TRAMP routes sudo through an SSH shell.
+  ;; (add-to-list 'tramp-default-proxies-alist
+  ;;              '("jeeves\\.lan" "root" "/ssh:jeeves@jeeves.lan:"))
+
+  ;; Sudo composition — `/rpc:root@HOST`: `SSH`es as the configured user
+  ;; and runs `tramp-rpc-server` under `sudo`, giving root-level RPC access.
+  ;; Requires passwordless `sudo` for `tramp-rpc-server` on the remote host.
+  (defvar reomacs/tramp-rpc-sudo-compose-hosts '(("jeeves\\.lan" . "jeeves"))
+    "Alist of (HOST-REGEXP . SSH-USER) for rpc sudo composition.
+When connecting as root via rpc to a matching host, SSH connects
+as SSH-USER and runs tramp-rpc-server under sudo.")
+
+  (defun reomacs/tramp-rpc--sudo-match (host)
+    "Return the SSH user for HOST if it matches a sudo-compose entry."
+    (--some (when (string-match-p (car it) host)
+              (cdr it))
+            reomacs/tramp-rpc-sudo-compose-hosts))
+
+  (defun reomacs/tramp-rpc-sudo-connect-advice (orig-fn vec)
+    "Advise `tramp-rpc--connect' for sudo composition.
+When user is root and host matches `reomacs/tramp-rpc-sudo-compose-hosts',
+SSH as the real user and launch tramp-rpc-server under sudo.
+The binary path's ~/ is expanded as the SSH user, not root."
+    (let ((host (tramp-file-name-host vec)))
+      (-if-let (real-user (and (equal (tramp-file-name-user vec) "root")
+                               (reomacs/tramp-rpc--sudo-match host)))
+          ;; Build an SSH vec with the real user for ControlMaster/socket paths
+          (let ((ssh-vec (copy-tramp-file-name vec)))
+            (setf (tramp-file-name-user ssh-vec) real-user)
+            ;; 1. ControlMaster as the real SSH user
+            (tramp-rpc--ensure-controlmaster-directory)
+            (when tramp-rpc-use-controlmaster
+              (tramp-rpc--establish-controlmaster ssh-vec))
+            ;; 2. Start server: SSH as real-user, sudo the binary,
+            ;;    but use original vec (user=root) for TRAMP naming/storage
+            (let* ((binary-path (or tramp-rpc-deploy-remote-binary-path
+                                    "tramp-rpc-server"))
+                   ;; Expand ~/ as real user's home so sudo doesn't
+                   ;; resolve it as root's home
+                   (expanded-binary
+                    (replace-regexp-in-string
+                     "\\`~/" (format "~%s/" real-user) binary-path))
+                   (port (tramp-file-name-port vec))
+                   (proxyjump (tramp-rpc--hops-to-proxyjump vec))
+                   (ssh-args
+                    (append
+                     (list "ssh")
+                     tramp-rpc-ssh-args
+                     (list "-l" real-user)
+                     (when port (list "-p" (number-to-string port)))
+                     (when proxyjump (list "-J" proxyjump))
+                     (list "-o" "BatchMode=yes")
+                     (list "-o" "StrictHostKeyChecking=accept-new")
+                     (--mapcat (list "-o" it) tramp-rpc-ssh-options)
+                     (when tramp-rpc-use-controlmaster
+                       (list "-o" "ControlMaster=auto"
+                             "-o" (format "ControlPath=%s"
+                                          (tramp-rpc--controlmaster-socket-path ssh-vec))
+                             "-o" (format "ControlPersist=%s"
+                                          tramp-rpc-controlmaster-persist)))
+                     (list host (format "sudo %s" expanded-binary))))
+                   (process-name (tramp-get-connection-name vec))
+                   (buffer-name (tramp-buffer-name vec))
+                   (buffer (get-buffer-create buffer-name))
+                   process)
+              (with-current-buffer buffer
+                (erase-buffer)
+                (set-buffer-multibyte nil))
+              (let ((process-connection-type nil))
+                (setq process (apply #'start-process process-name buffer ssh-args)))
+              (set-process-query-on-exit-flag process nil)
+              (set-process-coding-system process 'binary 'binary)
+              (set-process-filter process #'tramp-rpc--connection-filter)
+              (tramp-rpc--set-connection vec process buffer)
+              (process-put process :tramp-rpc-vec vec)
+              (condition-case err
+                  (let ((response (tramp-rpc--call vec "system.info" nil)))
+                    (unless response
+                      (signal 'remote-file-error
+                              (list "sudo RPC server not responding on" host))))
+                (remote-file-error
+                 (tramp-rpc--remove-connection vec)
+                 (signal (car err) (cdr err))))
+              (tramp-set-connection-property process "connected" t)
+              (tramp-rpc--get-connection vec)))
+        (funcall orig-fn vec))))
+
+  (use-package tramp-rpc
+    :straight (:host github :repo "ArthurHeymans/emacs-tramp-rpc"
+                     :branch "multi-hop-test"
+                     :files ("lisp/*.el"))
+    :custom
+    (tramp-rpc-deploy-never-deploy t)
+    (tramp-rpc-deploy-remote-binary-path "~/.nix-profile/bin/tramp-rpc-server")
+    ;; SSH-level timeouts so dead connections are detected in ~5s.
+    (tramp-rpc-ssh-options '("ConnectTimeout=5"
+                             "ServerAliveInterval=5"
+                             "ServerAliveCountMax=1"))
+    :config
+    (advice-add 'tramp-rpc--connect :around #'reomacs/tramp-rpc-sudo-connect-advice)
+
+    (defun reomacs/tramp-rpc-guard-non-essential (orig-fn vec)
+      "Refuse to open new RPC connections when `non-essential' is non-nil.
+Mirrors `tramp-maybe-open-connection' which checks `tramp-connectable-p'."
+      (unless (tramp-connectable-p vec)
+        (throw 'non-essential 'non-essential))
+      (funcall orig-fn vec))
+    (advice-add 'tramp-rpc--ensure-connection :around
+                #'reomacs/tramp-rpc-guard-non-essential))
 #+end_src
