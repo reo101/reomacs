@@ -251,7 +251,7 @@ These are fetched and built by nix, then added to the PATH.
   (defun reomacs/straight-freeze ()
     "Freeze straight.el versions to lockfile."
     (interactive)
-    (straight-freeze-versions)
+    (straight-freeze-versions t)
     (message "straight: versions frozen"))
 
   (use-package compile-angel
@@ -1310,6 +1310,11 @@ DELTA is the pixel scroll amount."
 ** Transient
 
 #+begin_src emacs-lisp
+  ;; Transient 0.13 requires llama, but straight can retain the old dependency cache.
+  (use-package llama
+    :straight t
+    :demand t)
+
   (use-package transient
     :straight t
     :demand t
@@ -1424,6 +1429,11 @@ Keep autosave files in central directory.
 Keep backup files in central directory.
 
 #+begin_src emacs-lisp
+  ;; Load straight's current Tramp before this section touches Tramp variables.
+  (use-package tramp
+    :straight t
+    :demand t)
+
   (use-package emacs
     :custom
     (backup-directory-alist
@@ -1651,22 +1661,30 @@ session is ready."
 
     ;; Movement keybindings (like nvim ]m/[m etc)
     (define-key evil-normal-state-map (kbd "]m")
-      (evil-textobj-tree-sitter-goto-textobj "function.outer"))
+      (lambda () (interactive)
+        (evil-textobj-tree-sitter-goto-textobj "function.outer")))
     (define-key evil-normal-state-map (kbd "[m")
-      (evil-textobj-tree-sitter-goto-textobj "function.outer" t))
+      (lambda () (interactive)
+        (evil-textobj-tree-sitter-goto-textobj "function.outer" t)))
     (define-key evil-normal-state-map (kbd "]M")
-      (evil-textobj-tree-sitter-goto-textobj "function.outer" nil t))
+      (lambda () (interactive)
+        (evil-textobj-tree-sitter-goto-textobj "function.outer" nil t)))
     (define-key evil-normal-state-map (kbd "[M")
-      (evil-textobj-tree-sitter-goto-textobj "function.outer" t t))
+      (lambda () (interactive)
+        (evil-textobj-tree-sitter-goto-textobj "function.outer" t t)))
 
     (define-key evil-normal-state-map (kbd "]]")
-      (evil-textobj-tree-sitter-goto-textobj "class.outer"))
+      (lambda () (interactive)
+        (evil-textobj-tree-sitter-goto-textobj "class.outer")))
     (define-key evil-normal-state-map (kbd "[[")
-      (evil-textobj-tree-sitter-goto-textobj "class.outer" t))
+      (lambda () (interactive)
+        (evil-textobj-tree-sitter-goto-textobj "class.outer" t)))
     (define-key evil-normal-state-map (kbd "][")
-      (evil-textobj-tree-sitter-goto-textobj "class.outer" nil t))
+      (lambda () (interactive)
+        (evil-textobj-tree-sitter-goto-textobj "class.outer" nil t)))
     (define-key evil-normal-state-map (kbd "[]")
-      (evil-textobj-tree-sitter-goto-textobj "class.outer" t t)))
+      (lambda () (interactive)
+        (evil-textobj-tree-sitter-goto-textobj "class.outer" t t))))
 #+end_src
 
 *** Meow
@@ -1784,6 +1802,8 @@ session is ready."
 
 #+begin_src emacs-lisp
   (use-package evil-keypad
+    ;; Pinned in straight/versions/default.el just before upstream 0a9f387,
+    ;; which passes key vectors to Emacs' string-only `set--this-command-keys'.
     :straight (:host github :repo "achyudh/evil-keypad")
     :after evil
     :config
@@ -2020,83 +2040,11 @@ If point is after a non-delimiter, delete back to the previous boundary."
     (savehist-mode))
 
   (use-package markdown-ts-mode
-    ;; https://github.com/LionyxML/markdown-ts-mode-lab is the development/test
-    ;; repo for the mode, but it doesn't currently ship the .el file.  Until
-    ;; Emacs 31 lands, install the upstream mode directly from Emacs master.
-    :straight (markdown-ts-mode
-               :type git :host github :repo "emacs-mirror/emacs" :branch "master"
-               :files ("lisp/textmodes/markdown-ts-mode.el")
-               :build (:not compile))
-    :commands (markdown-ts-mode markdown-ts-view-mode)
-    :preface
-    ;; Emacs 31 compatibility shims needed by upstream markdown-ts-mode on 30.x.
-    (require 'cl-lib)
-    (require 'treesit)
-    (unless (fboundp 'treesit-declare-unavailable-functions)
-      (defmacro treesit-declare-unavailable-functions () nil))
-    (defvar treesit-auto-install-grammar nil)
-    (defvar treesit-major-mode-remap-alist major-mode-remap-alist)
-    (unless (fboundp 'treesit-ensure-installed)
-      (defun treesit-ensure-installed (lang)
-        "Compatibility shim for Emacs 30."
-        (and (treesit-available-p)
-             (treesit-language-available-p lang))))
-    (unless (fboundp 'treesit-merge-font-lock-feature-list)
-      (defun treesit-merge-font-lock-feature-list (features-list-1 features-list-2)
-        "Compatibility shim for Emacs 30."
-        (let ((result nil)
-              (features-1 (car features-list-1))
-              (features-2 (car features-list-2)))
-          (while (or features-1 features-2)
-            (push (cond
-                   ((and features-1 features-2) (cl-union features-1 features-2))
-                   (features-1 features-1)
-                   (features-2 features-2))
-                  result)
-            (setq features-list-1 (cdr features-list-1)
-                  features-list-2 (cdr features-list-2)
-                  features-1 (car features-list-1)
-                  features-2 (car features-list-2)))
-          (nreverse result))))
-    (unless (fboundp 'with-work-buffer)
-      (defmacro with-work-buffer (&rest body)
-        "Compatibility shim for Emacs 30."
-        `(with-temp-buffer ,@body)))
-    (with-eval-after-load 'html-ts-mode
-      (defvar html-ts-mode--treesit-font-lock-feature-list nil))
-    (with-eval-after-load 'yaml-ts-mode
-      (defvar yaml-ts-mode--font-lock-feature-list nil))
-    (with-eval-after-load 'toml-ts-mode
-      (defvar toml-ts-mode--font-lock-feature-list nil))
-    :init
-    ;; Emacs 30's `treesit-range-rules' does not support the dynamic :embed
-    ;; form used for native code-block parsing in the Emacs 31 mode.
-    (when (< emacs-major-version 31)
-      (setq markdown-ts-fontify-code-blocks-natively nil
-            markdown-ts-enable-code-block-context-mode nil)))
-
-  (use-package markdown-mode
-    :commands markdown-mode)
-
-  (defun reomacs/markdown--treesit-ready-p ()
-    "Return non-nil when Markdown tree-sitter grammars are available."
-    (and (treesit-available-p)
-         (treesit-language-available-p 'markdown)
-         (treesit-language-available-p 'markdown-inline)))
-
-  (defun reomacs/markdown-mode ()
-    "Use `markdown-ts-mode' when available, otherwise fall back to `markdown-mode'."
-    (interactive)
-    (if (reomacs/markdown--treesit-ready-p)
-        (condition-case err
-            (markdown-ts-mode)
-          (error
-           (message "markdown-ts-mode failed (%s); falling back to markdown-mode" err)
-           (markdown-mode)))
-      (markdown-mode)))
-
-  (dolist (pattern '("\\.md\\'" "\\.markdown\\'" "\\.mdx\\'"))
-    (add-to-list 'auto-mode-alist (cons pattern #'reomacs/markdown-mode)))
+    ;; The lab tracks Emacs 31's built-in mode; this companion package is the
+    ;; same author's implementation for Emacs 29 and 30.
+    :straight (:host github :repo "LionyxML/markdown-ts-mode")
+    :mode (("\\.md\\'" . markdown-ts-mode)
+           ("\\.markdown\\'" . markdown-ts-mode)))
   ;; (defun markdown-view-mode-maybe ()
   ;;   (cond ((and (eq major-mode 'markdown-mode) buffer-read-only) (markdown-view-mode))
   ;;         ((and (eq major-mode 'markdown-view-mode) (not buffer-read-only)) (markdown-mode))))
@@ -2637,9 +2585,7 @@ reconnection prompts every time eshell starts.
 #+begin_src emacs-lisp
   ;; vc-jj: integrates jj with built-in vc.el and project.el
   (use-package vc-jj
-    :straight t
-    :config
-    (require 'project-jj))
+    :straight t)
 
   ;; jj-mode: Magit-inspired interface for jujutsu
   (use-package jj-mode
@@ -2762,10 +2708,31 @@ reconnection prompts every time eshell starts.
     :hook (org-mode . org-include-inline-mode))
 
 
-  (defcustom reomacs/dailies-file "~/Projects/Metacraft/dailies.org"
-    "Path to the dailies.org file for tracking daily work."
+  (defcustom reomacs/dailies-file "~/Projects/Baringa/dailies.org"
+    "Path to the dailies.org file for tracking daily work.
+Fallback only — an open dailies buffer always wins (see
+`reomacs/dailies-buffer-predicate')."
     :type 'file
     :group 'reo101)
+
+  (defcustom reomacs/dailies-buffer-predicate
+    (lambda (buf)
+      (string= (buffer-name buf)
+               (file-name-nondirectory (expand-file-name reomacs/dailies-file))))
+    "Predicate deciding whether BUF counts as the dailies buffer.
+Defaults to matching the buffer name against the basename of
+`reomacs/dailies-file'; customize for a different naming scheme."
+    :type 'function
+    :group 'reo101)
+
+  (defun reomacs/dailies--buffer ()
+    "Return the dailies buffer.
+Prefers a live buffer matching `reomacs/dailies-buffer-predicate'
+(so commands operate on what you are looking at); falls back to
+opening `reomacs/dailies-file'."
+    (or (-first (lambda (buf) (funcall reomacs/dailies-buffer-predicate buf))
+                (buffer-list))
+        (find-file-noselect (expand-file-name reomacs/dailies-file))))
 
   ;;;###autoload
   (defun reomacs/dailies-new-day ()
@@ -2775,7 +2742,7 @@ workday if already exists), copies previous 'Today' to 'Yesterday'
 (or appropriate weekday name), and creates empty 'Today' section."
     (interactive)
     (require 'calendar)
-    (-let* ((dailies-buf (find-file-noselect (expand-file-name reomacs/dailies-file)))
+    (-let* ((dailies-buf (reomacs/dailies--buffer))
             (today (calendar-current-date))
             (today-time (encode-time 0 0 0 (nth 1 today) (nth 0 today) (nth 2 today)))
             (last-date-pos nil)
@@ -2859,13 +2826,32 @@ Returns 'Yesterday', 'Friday', 'Last Week', or the weekday name."
        (t (format "Last %s" last-dow)))))
 
   (defcustom reomacs/dailies-repo-aliases '()
-    "Alist mapping GitHub \"owner/repo\" to display names for dailies.
-Set as a file-local variable in dailies.org."
+    "Alist mapping repo identities to display names for dailies.
+Keys may be written as \"owner/repo\" (GitHub), \"org/project/repo\"
+(Azure DevOps), or any URL/remote containing them — both keys and
+lookups go through `reomacs/dailies--canonical-repo-id', so all shapes
+resolve against each other.  Set as a file-local variable in
+dailies.org."
     :type '(alist :key-type string :value-type string)
     :group 'reo101
     :safe #'listp)
 
-  (defcustom reomacs/dailies-gh-event-handlers
+  (defcustom reomacs/dailies-forge 'github
+    "Git forge the interactions fetchers query.
+Set as a file-local variable in dailies.org to vary per workspace."
+    :type '(choice (const :tag "GitHub (gh CLI)" github)
+                   (const :tag "Azure DevOps (az CLI)" azure))
+    :group 'reo101
+    :safe #'symbolp)
+
+  (defcustom reomacs/dailies-azure-org "https://dev.azure.com/baringa"
+    "Azure DevOps organization URL, used when `reomacs/dailies-forge' is azure.
+Set as a file-local variable in dailies.org if you deal with several orgs."
+    :type 'string
+    :group 'reo101
+    :safe #'stringp)
+
+  (defcustom reomacs/dailies-event-handlers
     '((pr-create    . reomacs/dailies--format-pr-create)
       (pr-close     . reomacs/dailies--format-pr-close)
       (pr-merge     . reomacs/dailies--format-pr-merge)
@@ -2884,7 +2870,7 @@ Should return an org-formatted string starting with \"+ \"."
   (defun reomacs/dailies--format-event (event-type props)
     "Format EVENT-TYPE using handler from `reomacs/dailies-gh-event-handlers'.
 PROPS is a plist with event-specific data."
-    (-if-let (handler (alist-get event-type reomacs/dailies-gh-event-handlers))
+    (-if-let (handler (alist-get event-type reomacs/dailies-event-handlers))
         (funcall handler props)
       (format "+ [Unknown event: %s]" event-type)))
 
@@ -2945,10 +2931,31 @@ PROPS is a plist with event-specific data."
             (plist-get props :display-name)
             (plist-get props :branch)))
 
-  (defun reomacs/dailies--repo-display-name (owner-repo repo-name)
-    "Get display name for OWNER-REPO, falling back to REPO-NAME."
-    (or (cdr (assoc owner-repo reomacs/dailies-repo-aliases))
-        repo-name))
+  (defun reomacs/dailies--canonical-repo-id (repo-id)
+    "Canonicalize REPO-ID to its slash-separated path under the forge host.
+Strips schemes, credentials, hostnames and Azure's \"_git\" segments,
+so \"https://user@dev.azure.com/org/project/_git/repo\",
+\"git@github.com:owner/repo.git\" and bare path ids all resolve against
+alias keys written in any of those shapes.  Cosmetic limitation: repo
+names containing dots are truncated at the dot."
+    (let* ((no-scheme (replace-regexp-in-string "\\`[a-zA-Z][a-zA-Z0-9+.-]*://" "" repo-id))
+           (no-suffix (replace-regexp-in-string "\\.git\\'" "" no-scheme))
+           (parts (split-string no-suffix "[/:@ \t]+" t)))
+      (-when-let (host-idx (--find-index (string-match-p "\\." it) parts))
+        (setq parts (nthcdr (1+ host-idx) parts)))
+      (string-join (--filter (not (equal it "_git")) parts) "/")))
+
+  (defun reomacs/dailies--repo-display-name (aliases repo-id repo-name)
+    "Get display name for REPO-ID from ALIASES, falling back to REPO-NAME.
+Both sides pass through `reomacs/dailies--canonical-repo-id' before
+comparison.  ALIASES is taken from the runner plist — captured in the
+dailies buffer at command time, because results format asynchronously
+outside of it where file-local values are not visible."
+    (-if-let (match (--first (string= (reomacs/dailies--canonical-repo-id repo-id)
+                                      (reomacs/dailies--canonical-repo-id (car it)))
+                             aliases))
+        (cdr match)
+      repo-name))
 
   (defun reomacs/dailies--date-on-day-p (iso-date target-date)
     "Check if ISO-DATE (e.g. \"2026-01-23T20:49:24Z\") is on TARGET-DATE (\"2026-01-23\")."
@@ -2956,9 +2963,21 @@ PROPS is a plist with event-specific data."
          (not (string-prefix-p "0001-" iso-date))
          (string-prefix-p target-date iso-date)))
 
-  (defun reomacs/dailies--gh-username ()
-    "Get the current GitHub username."
-    (string-trim (shell-command-to-string "gh api user --jq .login 2>/dev/null")))
+  (defvar reomacs/dailies--username-commands
+    '((github . ("gh" "api" "user" "--jq" ".login"))
+      (azure . ("az" "account" "show" "--query" "user.name" "--output" "tsv")))
+    "Alist mapping forge symbols to argv fetching the current user's login.")
+
+  (defun reomacs/dailies--username-command ()
+    "argv fetching the username for `reomacs/dailies-forge'."
+    (or (alist-get reomacs/dailies-forge reomacs/dailies--username-commands)
+        (user-error "Unknown dailies forge: %s" reomacs/dailies-forge)))
+
+  (defun reomacs/dailies--fetch-username ()
+    "Get the current user's login for the active forge."
+    (string-trim
+     (shell-command-to-string
+      (mapconcat #'shell-quote-argument (reomacs/dailies--username-command) " "))))
 
   ;; Runner abstraction for sync/async unification
   ;; A runner is a plist with:
@@ -2984,7 +3003,7 @@ PROPS is a plist with event-specific data."
                (format "gh search prs --author=@me %s --json number,repository,url,createdAt,closedAt,state" date-filter)
                (lambda (output)
                  (-some--> output
-                   (json-parse-string it :array-type 'list :object-type 'alist)
+                   (ignore-errors (json-parse-string it :array-type 'list :object-type 'alist))
                    (reomacs/dailies--process-prs runner it))
                  (funcall finish)))
       ;; Reviewed PRs
@@ -2992,7 +3011,7 @@ PROPS is a plist with event-specific data."
                (format "gh search prs --reviewed-by=@me %s --json number,repository,url" date-filter)
                (lambda (output)
                  (-some--> output
-                   (json-parse-string it :array-type 'list :object-type 'alist)
+                   (ignore-errors (json-parse-string it :array-type 'list :object-type 'alist))
                    (reomacs/dailies--process-reviews runner it))
                  (funcall finish)))
       ;; Authored issues
@@ -3000,7 +3019,7 @@ PROPS is a plist with event-specific data."
                (format "gh search issues --author=@me %s --json number,repository,url,createdAt" date-filter)
                (lambda (output)
                  (-some--> output
-                   (json-parse-string it :array-type 'list :object-type 'alist)
+                   (ignore-errors (json-parse-string it :array-type 'list :object-type 'alist))
                    (reomacs/dailies--process-issues runner it))
                  (funcall finish)))
       ;; Branch pushes
@@ -3017,11 +3036,11 @@ PROPS is a plist with event-specific data."
 
   (defun reomacs/dailies--process-prs (runner prs)
     "Process authored PRs using RUNNER."
-    (-let [(&plist :date :username :fetch :emit :spawn :finish) runner]
+    (-let [(&plist :date :username :aliases :fetch :emit :spawn :finish) runner]
       (--each prs
         (-let* [((&alist 'url 'number 'createdAt 'closedAt
                          'repository (&alist 'name 'nameWithOwner)) it)
-                (display-name (reomacs/dailies--repo-display-name nameWithOwner name))
+                (display-name (reomacs/dailies--repo-display-name aliases nameWithOwner name))
                 (props (list :url url :display-name display-name :number number))]
           (cond
            ((reomacs/dailies--date-on-day-p createdAt date)
@@ -3042,10 +3061,10 @@ PROPS is a plist with event-specific data."
 
   (defun reomacs/dailies--process-reviews (runner prs)
     "Process reviewed PRs using RUNNER."
-    (-let [(&plist :date :username :fetch :emit :spawn :finish) runner]
+    (-let [(&plist :date :username :aliases :fetch :emit :spawn :finish) runner]
       (--each prs
         (-let* [((&alist 'url 'number 'repository (&alist 'name 'nameWithOwner)) it)
-                (display-name (reomacs/dailies--repo-display-name nameWithOwner name))]
+                (display-name (reomacs/dailies--repo-display-name aliases nameWithOwner name))]
           (funcall spawn)
           (funcall fetch
                    (list "gh" "api" (format "/repos/%s/pulls/%s/reviews" nameWithOwner number)
@@ -3060,22 +3079,22 @@ PROPS is a plist with event-specific data."
 
   (defun reomacs/dailies--process-issues (runner issues)
     "Process authored issues using RUNNER."
-    (-let [(&plist :date :emit) runner]
+    (-let [(&plist :date :aliases :emit) runner]
       (--each issues
         (-let* [((&alist 'url 'number 'createdAt 'repository (&alist 'name 'nameWithOwner)) it)
-                (display-name (reomacs/dailies--repo-display-name nameWithOwner name))]
+                (display-name (reomacs/dailies--repo-display-name aliases nameWithOwner name))]
           (when (reomacs/dailies--date-on-day-p createdAt date)
             (funcall emit (reomacs/dailies--format-event
                            'issue-create (list :url url :display-name display-name :number number))))))))
 
   (defun reomacs/dailies--process-pushes (runner lines)
     "Process branch push events using RUNNER."
-    (-let [(&plist :fetch :emit :spawn :finish) runner]
+    (-let [(&plist :aliases :fetch :emit :spawn :finish) runner]
       (--each lines
         (-when-let* [((&alist 'repo 'branch) (ignore-errors (json-parse-string it :object-type 'alist)))
                      (branch-name (replace-regexp-in-string "^refs/heads/" "" branch))
                      (repo-name (-last-item (split-string repo "/")))
-                     (display-name (reomacs/dailies--repo-display-name repo repo-name))
+                     (display-name (reomacs/dailies--repo-display-name aliases repo repo-name))
                      (owner (-first-item (split-string repo "/")))]
           (funcall spawn)
           (funcall fetch
@@ -3091,12 +3110,176 @@ PROPS is a plist with event-specific data."
                                         'push-no-pr (list :display-name display-name :branch branch-name)))))
                      (funcall finish)))))))
 
+  ;; ----------------------------------------------------------------------
+  ;; Azure DevOps (az CLI) fetcher
+  ;; ----------------------------------------------------------------------
+
+  (defun reomacs/dailies--az-org-name (org)
+    "Org segment of Azure DevOps ORG url (e.g. \"baringa\")."
+    (-last-item (split-string org "/")))
+
+  (defun reomacs/dailies--az-pr-browser-url (org pr)
+    "Browser-facing URL for Azure DevOps PR alist PR in ORG."
+    (-let* (((&alist 'pullRequestId number
+                     'repository (&alist 'name repo-name
+                                         'project (&alist 'name project)))
+             pr))
+      (format "%s/%s/_git/%s/pullrequest/%s"
+              (string-trim-right org "/") project repo-name number)))
+
+  (defun reomacs/dailies--az-repo-id (org pr)
+    "Canonical \"org/project/repo\" identity for Azure DevOps PR alist PR in ORG.
+Matches alias keys written either as that path or as a full URL."
+    (-let* (((&alist 'repository (&alist 'name repo-name
+                                         'project (&alist 'name project)))
+             pr))
+      (string-join (list (reomacs/dailies--az-org-name org) project repo-name) "/")))
+
+  (defun reomacs/dailies--az-threads-cmd (org pr)
+    "argv fetching discussion threads for Azure DevOps PR alist PR in ORG."
+    (-let* (((&alist 'pullRequestId number
+                     'repository (&alist 'id repo-id
+                                         'project (&alist 'name project)))
+             pr))
+      (list "az" "devops" "invoke"
+            "--org" org
+            "--area" "git"
+            "--resource" "pullRequestThreads"
+            "--route-parameters"
+            (format "project=%s" project)
+            (format "repositoryId=%s" repo-id)
+            (format "pullRequestId=%s" number)
+            "-o" "json")))
+
+  (defun reomacs/dailies--az-review-candidate-p (pr username date)
+    "Cheap pre-filter: might Azure PR hold my review activity around DATE?
+Pays for a per-PR threads request only when I am an assigned reviewer,
+or the PR was created or closed on DATE and is not mine."
+    (let ((creator (alist-get 'uniqueName (alist-get 'createdBy pr))))
+      (and (not (string= username creator))
+           (or (member username (--map (alist-get 'uniqueName it)
+                                       (alist-get 'reviewers pr)))
+               (reomacs/dailies--date-on-day-p (alist-get 'creationDate pr) date)
+               (reomacs/dailies--date-on-day-p (alist-get 'closedDate pr) date)))))
+
+  (defun reomacs/dailies--process-az-prs (runner prs)
+    "Emit events for Azure DevOps PR alists PRS using RUNNER."
+    (-let* (((&plist :date :aliases :azure-org :username
+                     :emit :spawn :fetch :finish)
+             runner))
+      (--each prs
+        (-let* ((display-name (reomacs/dailies--repo-display-name
+                               aliases
+                               (reomacs/dailies--az-repo-id azure-org it)
+                               (alist-get 'name (alist-get 'repository it))))
+                (props (list :url (reomacs/dailies--az-pr-browser-url azure-org it)
+                             :display-name display-name
+                             :number (alist-get 'pullRequestId it)))
+                (status (alist-get 'status it))
+                ;; Unlike gh search --author=@me, the project listing returns
+                ;; everyone's PRs, so gate lifecycle events on creator.
+                (mine (string= username
+                               (alist-get 'uniqueName (alist-get 'createdBy it)))))
+          (cond
+           ((and mine
+                 (reomacs/dailies--date-on-day-p (alist-get 'creationDate it) date))
+            (funcall emit (reomacs/dailies--format-event 'pr-create props)))
+           ((and mine
+                 (member status '("completed" "abandoned"))
+                 (reomacs/dailies--date-on-day-p (alist-get 'closedDate it) date))
+            ;; Azure has no separate merge/close distinction beyond status:
+            ;; completed means the PR was completed (merged), abandoned not.
+            (funcall emit (reomacs/dailies--format-event
+                           (if (string= status "completed") 'pr-merge 'pr-close)
+                           props))))
+          ;; Review scan: did I comment on any thread on the target day?
+          (when (reomacs/dailies--az-review-candidate-p it username date)
+            (funcall spawn)
+            (funcall fetch
+                     (reomacs/dailies--az-threads-cmd azure-org it)
+                     (lambda (output)
+                       (-some--> output
+                         (ignore-errors
+                           (json-parse-string (string-trim it)
+                                              :array-type 'list :object-type 'alist
+                                              :null-object nil :false-object nil))
+                         (alist-get 'value it)
+                         (reomacs/dailies--process-az-threads runner props it))
+                       (funcall finish))))))))
+
+  (defun reomacs/dailies--process-az-threads (runner props threads)
+    "Emit a review event if THREADS show my comments on RUNNER's date."
+    (-let [(&plist :date :username :emit) runner]
+      ;; Bind `thread' explicitly: a nested --any? would shadow the outer `it'.
+      (when (--any? (let ((thread it))
+                      (--any? (and (reomacs/dailies--date-on-day-p
+                                    (alist-get 'publishedDate it) date)
+                                   (string= (alist-get 'uniqueName (alist-get 'author it))
+                                            username)
+                                   (not (equal (alist-get 'commentType it) "system")))
+                              (alist-get 'comments thread)))
+                    threads)
+        (funcall emit (reomacs/dailies--format-event 'pr-review props)))))
+
+  (defun reomacs/dailies--run-azure-fetch (runner)
+    "Execute Azure DevOps interactions fetch using RUNNER abstraction.
+Azure's org-wide PR listing only ever returns PRs created by the
+caller, so enumerate projects first, then scan each project's PRs.
+Pushes have no queryable feed in Azure DevOps and are not fetched."
+    (-let* (((&plist :azure-org :fetch :spawn :finish) runner))
+      (funcall spawn)
+      (funcall fetch
+               (list "az" "devops" "project" "list" "--org" azure-org "-o" "json")
+               (lambda (output)
+                 (-when-let* ((projects (ignore-errors
+                                          (json-parse-string (string-trim output)
+                                                             :array-type 'list
+                                                             :object-type 'alist
+                                                             :null-object nil
+                                                             :false-object nil)))
+                              (values (alist-get 'value projects)))
+                   (--each values
+                     (funcall spawn)
+                     (funcall fetch
+                              (list "az" "repos" "pr" "list" "--org" azure-org
+                                    "--project" (alist-get 'name it)
+                                    "--status" "all" "--top" "500" "-o" "json")
+                              (lambda (prs-output)
+                                (-some--> prs-output
+                                  (ignore-errors
+                                    (json-parse-string (string-trim prs-output)
+                                                       :array-type 'list
+                                                       :object-type 'alist
+                                                       :null-object nil
+                                                       :false-object nil))
+                                  (reomacs/dailies--process-az-prs runner it))
+                                (funcall finish))))
+                 (funcall finish))))))
+
+  (defvar reomacs/dailies--forge-fetchers
+    '((github . reomacs/dailies--run-gh-fetch)
+      (azure . reomacs/dailies--run-azure-fetch))
+    "Alist mapping `reomacs/dailies-forge' symbols to fetch functions.
+Each function receives the runner plist.")
+
+  (defun reomacs/dailies--run-forge-fetch (runner)
+    "Dispatch RUNNER to the fetcher for its :forge."
+    (-if-let (fetcher (alist-get (plist-get runner :forge)
+                                 reomacs/dailies--forge-fetchers))
+        (funcall fetcher runner)
+      (user-error "Unknown dailies forge: %s" (plist-get runner :forge))))
+
   (defun reomacs/dailies--make-sync-runner (date)
     "Create a sync runner for DATE.
-Returns a plist with runner functions and a results cell."
+Returns a plist with runner functions and a results cell.
+Buffer-local settings (`reomacs/dailies-forge', aliases, org URL) are
+captured here, while the command still runs inside the dailies buffer."
     (-let* ((results (list nil))  ; cons cell to accumulate results
-            (username (reomacs/dailies--gh-username)))
+            (username (reomacs/dailies--fetch-username)))
       (list :date date
+            :forge reomacs/dailies-forge
+            :aliases reomacs/dailies-repo-aliases
+            :azure-org reomacs/dailies-azure-org
             :username username
             :results results
             :fetch (lambda (cmd callback)
@@ -3110,12 +3293,12 @@ Returns a plist with runner functions and a results cell."
             :spawn #'ignore
             :finish #'ignore)))
 
-  (defun reomacs/dailies--fetch-gh-interactions (date)
-    "Fetch GitHub PR/issue interactions for DATE using gh CLI.
+  (defun reomacs/dailies--fetch-interactions (date)
+    "Fetch forge PR/issue interactions for DATE.
 DATE should be a string like \"2025-01-26\".
 Returns a list of org-formatted \"+ \" lines."
     (-let [runner (reomacs/dailies--make-sync-runner date)]
-      (reomacs/dailies--run-gh-fetch runner)
+      (reomacs/dailies--run-forge-fetch runner)
       (->> (plist-get runner :results)
            car
            delete-dups
@@ -3149,11 +3332,16 @@ Sets TERM=dumb and sends EOF to prevent gh from blocking on terminal."
 
   (defun reomacs/dailies--make-async-runner (date marker)
     "Create an async runner for DATE with MARKER for insertion.
-Returns a plist with runner functions using async state management."
+Returns a plist with runner functions using async state management.
+Buffer-local settings are captured here while the command still runs
+inside the dailies buffer."
     (-let* ((state (make-hash-table :test 'eq)))
       (puthash :pending 0 state)
       (puthash :marker marker state)
       (list :date date
+            :forge reomacs/dailies-forge
+            :aliases reomacs/dailies-repo-aliases
+            :azure-org reomacs/dailies-azure-org
             :username nil  ; filled in by initial fetch
             :state state
             :fetch (lambda (cmd callback)
@@ -3175,21 +3363,22 @@ Returns a plist with runner functions using async state management."
                             (with-current-buffer (marker-buffer m)
                               (save-excursion
                                 (goto-char m)
-                                (when (looking-at (regexp-quote (concat "+ " reomacs/dailies--gh-placeholder)))
+                                (when (looking-at (regexp-quote (concat "+ " reomacs/dailies--placeholder)))
                                   (delete-region (point) (line-beginning-position 2))))))
-                          (message "GitHub interactions fetch complete")
+                          (message "%s interactions fetch complete"
+                                   (plist-get runner :forge))
                           (set-marker m nil)))))))
 
-  (defun reomacs/dailies--fetch-gh-interactions-async (date marker)
-    "Fetch GitHub interactions for DATE asynchronously.
+  (defun reomacs/dailies--fetch-interactions-async (date marker)
+    "Fetch forge interactions for DATE asynchronously.
 MARKER points to placeholder line; results insert above it."
     (-let [runner (reomacs/dailies--make-async-runner date marker)]
       ;; First get username, then run the fetch
       (reomacs/dailies--gh-async
-       "gh api user --jq .login"
+       (reomacs/dailies--username-command)
        (lambda (output)
          (plist-put runner :username (string-trim output))
-         (reomacs/dailies--run-gh-fetch runner)))))
+         (reomacs/dailies--run-forge-fetch runner)))))
 
   (defun reomacs/dailies--previous-workday (from-time)
     "Return the previous workday before FROM-TIME.
@@ -3210,12 +3399,13 @@ Returns a time value or nil."
         (-let [date-str (match-string 1)]
           (date-to-time (concat date-str "T00:00:00"))))))
 
-  (defconst reomacs/dailies--gh-placeholder "⏳ Fetching GitHub interactions..."
+  (defconst reomacs/dailies--placeholder "⏳ Fetching forge interactions..."
     "Placeholder text shown while async fetch is in progress.")
 
   ;;;###autoload
-  (defun reomacs/dailies-insert-gh-interactions (days-back)
-    "Insert GitHub interactions for a date into the dailies buffer.
+  (defun reomacs/dailies-insert-interactions (days-back)
+    "Insert git forge interactions for a date into the dailies buffer.
+Queries the forge configured by `reomacs/dailies-forge'.
 DAYS-BACK of nil (no input) uses the smart 'yesterday' (previous workday)
 based on the current ** heading date. 0 means today. Positive numbers
 go that many days into the past from today."
@@ -3233,17 +3423,19 @@ go that many days into the past from today."
                (format-time-string "%Y-%m-%d"
                                    (time-subtract (current-time)
                                                   (* days-back 24 60 60))))))
-            (interactions (reomacs/dailies--fetch-gh-interactions target-date)))
+            (interactions (reomacs/dailies--fetch-interactions target-date)))
       (if interactions
           (progn
             (insert (string-join interactions "\n"))
             (message "Inserted %d interactions for %s" (length interactions) target-date))
-        (message "No GitHub interactions found for %s" target-date))))
+        (message "No %s interactions found for %s"
+                 reomacs/dailies-forge target-date))))
 
   ;;;###autoload
-  (defun reomacs/dailies-insert-gh-interactions-async (days-back)
-    "Insert GitHub interactions asynchronously.
-Like `reomacs/dailies-insert-gh-interactions' but non-blocking.
+  (defun reomacs/dailies-insert-interactions-async (days-back)
+    "Insert git forge interactions asynchronously.
+Queries the forge configured by `reomacs/dailies-forge'.
+Like `reomacs/dailies-insert-interactions' but non-blocking.
 Inserts a placeholder that gets replaced when results arrive.
 DAYS-BACK of nil (no input) uses smart yesterday, 0 means today."
     (interactive
@@ -3261,11 +3453,11 @@ DAYS-BACK of nil (no input) uses smart yesterday, 0 means today."
                                    (time-subtract (current-time)
                                                   (* days-back 24 60 60))))))
             (marker (point-marker)))
-      (insert "+ " reomacs/dailies--gh-placeholder "\n")
+      (insert "+ " reomacs/dailies--placeholder "\n")
       (set-marker marker (line-beginning-position 0))  ; point to placeholder line
       (set-marker-insertion-type marker t)  ; marker stays put when inserting before it
-      (message "Fetching GitHub interactions for %s..." target-date)
-      (reomacs/dailies--fetch-gh-interactions-async target-date marker)))
+      (message "Fetching %s interactions for %s..." reomacs/dailies-forge target-date)
+      (reomacs/dailies--fetch-interactions-async target-date marker)))
 
   ;;;###autoload
   (defun reomacs/org-heading-to-markdown-clipboard (&optional target-level md-level-offset)
