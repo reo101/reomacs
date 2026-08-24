@@ -7,7 +7,9 @@
 ;; Native compilation (Emacs 28+)
 (when (featurep 'native-compile)
   (setq native-comp-jit-compilation t
-        native-comp-async-report-warnings-errors 'silent))
+        native-comp-async-report-warnings-errors 'silent)
+  (add-to-list 'warning-suppress-types 'native-compiler)
+  (add-to-list 'warning-suppress-types 'comp))
 
 ;; Prefer newer source files over stale bytecode
 (setq load-prefer-newer t)

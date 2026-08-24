@@ -20,7 +20,9 @@
   ;; Native compilation (Emacs 28+)
   (when (featurep 'native-compile)
     (setq native-comp-jit-compilation t
-          native-comp-async-report-warnings-errors 'silent))
+          native-comp-async-report-warnings-errors 'silent)
+    (add-to-list 'warning-suppress-types 'native-compiler)
+    (add-to-list 'warning-suppress-types 'comp))
 
   ;; Prefer newer source files over stale bytecode
   (setq load-prefer-newer t)
@@ -2320,8 +2322,9 @@ If point is after a non-delimiter, delete back to the previous boundary."
      consult-theme :preview-key '(:debounce 0.2 any)
      consult-ripgrep consult-git-grep consult-grep consult-man
      consult-bookmark consult-recent-file consult-xref
-     consult--source-bookmark consult--source-file-register
-     consult--source-recent-file consult--source-project-recent-file
+     ;; consult >= 2.0 renamed sources from consult--source-X to consult-source-X
+     consult-source-bookmark consult-source-file-register
+     consult-source-recent-file consult-source-project-recent-file
      ;; :preview-key "M-."
      :preview-key '(:debounce 0.4 any))
 
