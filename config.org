@@ -325,24 +325,6 @@ These are fetched and built by nix, then added to the PATH.
     (global-ligature-mode t))
 #+end_src
 
-** Rainbow Delimiters (legacy)
-
-Note: The tree-sitter based version (treesit-rainbow-delimiters) is now available below.
-This legacy version can be disabled by setting `reomacs/use-legacy-rainbow` to nil.
-
-#+begin_src emacs-lisp :tangle no
-  (use-package rainbow-delimiters
-    :hook (prog-mode . rainbow-delimiters-mode)
-    :config
-    ;; Set faces after theme load to override theme defaults
-    (set-face-attribute 'rainbow-delimiters-depth-1-face nil :foreground "#f7768e")
-    (set-face-attribute 'rainbow-delimiters-depth-2-face nil :foreground "#e0af68")
-    (set-face-attribute 'rainbow-delimiters-depth-3-face nil :foreground "#7aa2f7")
-    (set-face-attribute 'rainbow-delimiters-depth-4-face nil :foreground "#ff9e64")
-    (set-face-attribute 'rainbow-delimiters-depth-5-face nil :foreground "#9d7cd8")
-    (set-face-attribute 'rainbow-delimiters-depth-6-face nil :foreground "#7dcfff"))
-#+end_src
-
 ** ANSI Color (Compilation)
 
 #+begin_src emacs-lisp
@@ -352,380 +334,49 @@ This legacy version can be disabled by setting `reomacs/use-legacy-rainbow` to n
 
 ** Indentation Guides
 
-Language-agnostic indentation guides with optional tree-sitter enhancement.
+Language-agnostic indentation guides.
 
 #+begin_src emacs-lisp
+  (defun reomacs/indent-bars-enable ()
+    "Enable indent bars outside Org's fontification buffers."
+    (unless (string-prefix-p " *org-src-fontification:" (buffer-name))
+      (indent-bars-mode 1)))
+
   (use-package indent-bars
-    :hook (prog-mode . indent-bars-mode)
+    :hook (prog-mode . reomacs/indent-bars-enable)
     :custom
-    (indent-bars-treesit-support t)
-    (indent-bars-no-descend-lists 'skip)
     ;; Emacs <30 on pgtk had stipple issues; prefer character bars there.
     (indent-bars-prefer-character
      (and (eq window-system 'pgtk) (< emacs-major-version 30))))
 #+end_src
 
-** Treesit Rainbow Delimiters
+** Rainbow Delimiters
 
-Tree-sitter based rainbow delimiters - works for all languages with tree-sitter grammars.
-Uses incremental updates for performance. Universal across Lisp, C-like, Script, and Data languages.
+Native tree-sitter font lock handles semantic delimiters in C++, Rust,
+TypeScript, and TSX. Other modes use Emacs syntax tables. Org source blocks
+inherit the same behavior through native fontification and major-mode remapping.
 
 #+begin_src emacs-lisp
-  ;;; Treesit Rainbow Delimiters - Universal rainbow highlighting using tree-sitter
-  ;; Based on nvim's rainbow-delimiters.nvim
+  (use-package rainbow-delimiters
+    :demand t
+    :custom
+    (rainbow-delimiters-max-face-count 6)
+    :custom-face
+    (rainbow-delimiters-depth-1-face ((t (:foreground "#f7768e"))))
+    (rainbow-delimiters-depth-2-face ((t (:foreground "#e0af68"))))
+    (rainbow-delimiters-depth-3-face ((t (:foreground "#7aa2f7"))))
+    (rainbow-delimiters-depth-4-face ((t (:foreground "#ff9e64"))))
+    (rainbow-delimiters-depth-5-face ((t (:foreground "#9d7cd8"))))
+    (rainbow-delimiters-depth-6-face ((t (:foreground "#7dcfff")))))
 
-  (defvar reomacs/treesit-rainbow--overlays nil
-    "List of overlays for current buffer.")
+  (add-to-list 'load-path (expand-file-name "lisp" user-emacs-directory))
+  (use-package reomacs-treesit-rainbow
+    :straight nil
+    :demand t
+    :hook (prog-mode . reomacs-treesit-rainbow-enable))
 
-  (defvar reomacs/treesit-rainbow--parser nil
-    "Tree-sitter parser for current buffer.")
-
-  (defvar-local reomacs/treesit-rainbow--org-parsers nil
-    "Treesit parsers created for org-mode source blocks.")
-
-  (defvar reomacs/treesit-rainbow--depth 0
-    "Current nesting depth during tree traversal.")
-
-  (defvar reomacs/treesit-rainbow--colors
-    (list "#f7768e" "#e0af68" "#7aa2f7" "#ff9e64" "#9d7cd8" "#7dcfff")
-    "Rainbow color palette.")
-
-  (defvar reomacs/treesit-rainbow--num-colors 6
-    "Number of colors in the palette.")
-
-  ;; Query alist: language -> list of node types to match
-  ;; Each entry is (container-type (open-delims) (close-delims) [child-predicate])
-  ;; child-predicate: optional function symbol, children matching it are colored at depth+1
-  (defvar reomacs/treesit-rainbow--queries
-    '((elisp . ((list . ((["("]) ([")"])  reomacs/treesit-rainbow--elisp-keyword-p))
-                (special_form . ((["("]) ([")"])  reomacs/treesit-rainbow--elisp-keyword-p))
-                (function_definition . ((["("]) ([")"])  reomacs/treesit-rainbow--elisp-keyword-p))
-                (macro_definition . ((["("]) ([")"])  reomacs/treesit-rainbow--elisp-keyword-p))
-                (vector . ((["["]) (["]"])))
-                (string . ((["\""]) (["\""])))))
-      (fennel . ((list . ((["("]) ([")"])))
-                 (table . ((["{"]) (["}"])))))
-      (clojure . ((list_lit . ((["("]) ([")"])))
-                  (vec_lit . ((["["]) (["]"])))
-                  (map_lit . ((["{"]) (["}"])))
-                  (set_lit . ((["{"]) (["}"])))))
-      (scheme . ((list . ((["("]) ([")"])))))
-      (c . ((compound_statement . ((["{"]) (["}"])))
-            (argument_list . ((["("]) ([")"])))
-            (parameter_list . ((["("]) ([")"])))
-            (parenthesized_expression . ((["("]) ([")"])))
-            (subscript_expression . ((["["]) (["]"])))
-            (initializer_list . ((["{"]) (["}"])))))
-      (cpp . ((compound_statement . ((["{"]) (["}"])))
-              (argument_list . ((["("]) ([")"])))
-              (parameter_list . ((["("]) ([")"])))
-              (parenthesized_expression . ((["("]) ([")"])))
-              (subscript_expression . ((["["]) (["]"])))
-              (initializer_list . ((["{"]) (["}"])))
-              (template_argument_list . ((["<"]) ([" >"])))))
-      (rust . ((block . ((["{"]) (["}"])))
-               (arguments . ((["("]) ([")"])))
-               (parameters . ((["("]) ([")"])))
-               (tuple_expression . ((["("]) ([")"])))
-               (array_expression . ((["["]) (["]"])))
-               (index_expression . ((["["]) (["]"])))
-               (type_arguments . ((["<"]) ([" >"])))
-               (type_parameters . ((["<"]) ([" >"])))
-               (closure_parameters . ((["|"]) (["|"])))
-               (struct_pattern . ((["{"]) (["}"])))
-               (tuple_pattern . ((["("]) ([")"])))))
-      (go . ((block . ((["{"]) (["}"])))
-             (argument_list . ((["("]) ([")"])))
-             (parameter_list . ((["("]) ([")"])))
-             (literal_value . ((["{"]) (["}"])))
-             (composite_literal . ((["{"]) (["}"])))
-             (array_type . ((["["]) (["]"])))
-             (slice_type . ((["["]) (["]"])))
-             (index_expression . ((["["]) (["]"])))
-             (slice_expression . ((["["]) (["]"])))))
-      (python . ((list . ((["["]) (["]"])))
-                 (dictionary . ((["{"]) (["}"])))
-                 (set . ((["{"]) (["}"])))
-                 (tuple . ((["("]) ([")"])))
-                 (parameters . ((["("]) ([")"])))
-                 (argument_list . ((["("]) ([")"])))
-                 (parenthesized_expression . ((["("]) ([")"])))
-                 (subscript . ((["["]) (["]"])))
-                 (list_comprehension . ((["["]) (["]"])))))
-      (javascript . ((object . ((["{"]) (["}"])))
-                     (array . ((["["]) (["]"])))
-                     (arguments . ((["("]) ([")"])))
-                     (formal_parameters . ((["("]) ([")"])))
-                     (parenthesized_expression . ((["("]) ([")"])))
-                     (statement_block . ((["{"]) (["}"])))
-                     (class_body . ((["{"]) (["}"])))
-                     (computed_property_name . ((["["]) (["]"])))
-                     (subscript_expression . ((["["]) (["]"])))))
-      (typescript . ((object . ((["{"]) (["}"])))
-                     (array . ((["["]) (["]"])))
-                     (arguments . ((["("]) ([")"])))
-                     (formal_parameters . ((["("]) ([")"])))
-                     (parenthesized_expression . ((["("]) ([")"])))
-                     (statement_block . ((["{"]) (["}"])))
-                     (class_body . ((["{"]) (["}"])))
-                     (type_arguments . ((["<"]) ([" >"])))
-                     (type_parameters . ((["<"]) ([" >"])))
-                     (enum_body . ((["{"]) (["}"])))))
-      (json . ((object . ((["{"]) (["}"])))
-               (array . ((["["]) (["]"])))))
-      (yaml . ((flow_mapping . ((["{"]) (["}"])))
-               (flow_sequence . ((["["]) (["]"])))))
-      (toml . ((inline_table . ((["{"]) (["}"])))
-               (array . ((["["]) (["]"]))))))
-    "Alist of language -> ((container-type . (open-delims) (close-delims))) for rainbow delimiters.")
-
-  ;; Get language for current buffer
-  (defun reomacs/treesit-rainbow--get-language ()
-    "Get tree-sitter language for current buffer."
-    (or (treesit-language-at (point-min))
-        (when (bound-and-true-p treesit--language)
-          treesit--language)))
-
-  (defun reomacs/treesit-rainbow--get-query (lang)
-    "Get delimiter query for language LANG."
-    (cdr (or (assoc lang reomacs/treesit-rainbow--queries)
-             (assoc 'elisp reomacs/treesit-rainbow--queries))))
-
-  (defun reomacs/treesit-rainbow--get-face (depth)
-    "Get face for DEPTH using rainbow color palette."
-    (let* ((idx (mod (1- depth) reomacs/treesit-rainbow--num-colors))
-           (color (nth idx reomacs/treesit-rainbow--colors))
-           (face-name (intern (format "reomacs/treesit-rainbow-depth-%d" (1+ idx)))))
-      (unless (facep face-name)
-        (make-face face-name)
-        (set-face-foreground face-name color))
-      face-name))
-
-  (defun reomacs/treesit-rainbow--apply-delimiter (node)
-    "Apply rainbow overlay to a delimiter NODE."
-    (let* ((beg (treesit-node-start node))
-           (end (treesit-node-end node))
-           (depth reomacs/treesit-rainbow--depth)
-           (face (reomacs/treesit-rainbow--get-face depth)))
-      (when (> end beg)
-        (let ((overlay (make-overlay beg end)))
-          (overlay-put overlay 'face face)
-          (overlay-put overlay 'priority 100)
-          (push overlay reomacs/treesit-rainbow--overlays)))))
-
-  (defun reomacs/treesit-rainbow--elisp-keyword-p (node)
-    "Return non-nil if NODE is an elisp keyword (symbol starting with :)."
-    (and (string= (treesit-node-type node) "symbol")
-         (string-prefix-p ":" (treesit-node-text node))))
-
-  (defun reomacs/treesit-rainbow--delim-string (v)
-    "Extract delimiter string from V (may be a vector or string)."
-    (if (vectorp v) (aref v 0) v))
-
-  (defun reomacs/treesit-rainbow--find-delimiters (container-node container-type)
-    "Find delimiter nodes within CONTAINER-NODE of CONTAINER-TYPE.
-QUERY-SPEC format: (open-delims close-delims [child-predicate]).
-When CHILD-PREDICATE is a function symbol, matching children are
-colored one level deeper than the container delimiters."
-    (let* ((query-spec (cdr (assoc (intern container-type)
-                                   (reomacs/treesit-rainbow--get-query
-                                    (treesit-parser-language reomacs/treesit-rainbow--parser))))))
-      (when query-spec
-        (let* ((open-delims (mapcar #'reomacs/treesit-rainbow--delim-string (car query-spec)))
-               (close-delims (mapcar #'reomacs/treesit-rainbow--delim-string (cadr query-spec)))
-               (child-pred (caddr query-spec)))
-          ;; Search for matching delimiter nodes
-          (let ((child (treesit-node-child container-node 0)))
-            (while child
-              (let ((text (treesit-node-text child)))
-                (cond
-                 ;; Match opening delimiter
-                 ((member text open-delims)
-                  (reomacs/treesit-rainbow--apply-delimiter child))
-                 ;; Match closing delimiter
-                 ((member text close-delims)
-                  (reomacs/treesit-rainbow--apply-delimiter child))
-                 ;; Match child predicate at depth+1
-                 ((and child-pred (funcall child-pred child))
-                  (let ((reomacs/treesit-rainbow--depth (1+ reomacs/treesit-rainbow--depth)))
-                    (reomacs/treesit-rainbow--apply-delimiter child)))))
-              (setq child (treesit-node-next-sibling child))))))))
-
-  (defun reomacs/treesit-rainbow--traverse (node)
-    "Recursively traverse parse tree NODE and apply overlays."
-    (let* ((type (treesit-node-type node))
-           (type-sym (intern type)))
-      ;; Check if this node type is a container we should highlight
-      (when (assoc type-sym (reomacs/treesit-rainbow--get-query
-                             (treesit-parser-language reomacs/treesit-rainbow--parser)))
-        (cl-incf reomacs/treesit-rainbow--depth)
-        (reomacs/treesit-rainbow--find-delimiters node type)
-        ;; Traverse children
-        (let ((child (treesit-node-child node 0)))
-          (while child
-            (reomacs/treesit-rainbow--traverse child)
-            (setq child (treesit-node-next-sibling child))))
-        (cl-decf reomacs/treesit-rainbow--depth))
-      ;; Also traverse even if not a container (for nested structures)
-      (unless (assoc type-sym (reomacs/treesit-rainbow--get-query
-                               (treesit-parser-language reomacs/treesit-rainbow--parser)))
-        (let ((child (treesit-node-child node 0)))
-          (while child
-            (reomacs/treesit-rainbow--traverse child)
-            (setq child (treesit-node-next-sibling child)))))))
-
-  (defun reomacs/treesit-rainbow--org-lang-to-treesit (lang-str)
-    "Map org source block language name LANG-STR to treesit language symbol."
-    (intern (or (cdr (assoc lang-str '(("emacs-lisp" . "elisp")
-                                        ("elisp" . "elisp")
-                                        ("lisp" . "elisp"))))
-                lang-str)))
-
-  (defun reomacs/treesit-rainbow--highlight-org-blocks ()
-    "Apply rainbow overlays to source blocks in org-mode."
-    (dolist (parser reomacs/treesit-rainbow--org-parsers)
-      (treesit-parser-delete parser))
-    (setq reomacs/treesit-rainbow--org-parsers nil)
-    (let ((blocks-by-lang (make-hash-table :test 'eq)))
-      ;; Collect source block ranges grouped by language
-      (org-element-map (org-element-parse-buffer) 'src-block
-        (lambda (block)
-          (let* ((lang-str (org-element-property :language block))
-                 (lang (and lang-str
-                            (reomacs/treesit-rainbow--org-lang-to-treesit lang-str))))
-            (when (and lang
-                       (assoc lang reomacs/treesit-rainbow--queries)
-                       (treesit-language-available-p lang))
-              (let* ((content-beg (save-excursion
-                                    (goto-char (org-element-property :post-affiliated block))
-                                    (forward-line 1)
-                                    (point)))
-                     (content-end (save-excursion
-                                    (goto-char (org-element-property :end block))
-                                    (when (re-search-backward
-                                           "^[ \t]*#\\+end_src"
-                                           (org-element-property :begin block) t)
-                                      (point)))))
-                (when (and content-end (> content-end content-beg))
-                  (push (cons content-beg content-end)
-                        (gethash lang blocks-by-lang))))))))
-      ;; Create a parser per language with all its block ranges
-      (maphash
-       (lambda (lang ranges)
-         (let ((parser (treesit-parser-create lang)))
-           (treesit-parser-set-included-ranges parser (nreverse ranges))
-           (push parser reomacs/treesit-rainbow--org-parsers)
-           (setq reomacs/treesit-rainbow--parser parser)
-           (setq reomacs/treesit-rainbow--depth 1)
-           (let ((root (treesit-parser-root-node parser)))
-             (when root
-               (reomacs/treesit-rainbow--traverse root)))))
-       blocks-by-lang)))
-
-  (defun reomacs/treesit-rainbow--highlight ()
-    "Parse buffer and apply rainbow overlays."
-    ;; Clear existing overlays
-    (mapc #'delete-overlay reomacs/treesit-rainbow--overlays)
-    (setq reomacs/treesit-rainbow--overlays nil)
-    (cond
-     ;; Org-mode: highlight embedded source blocks
-     ((derived-mode-p 'org-mode)
-      (reomacs/treesit-rainbow--highlight-org-blocks))
-     ;; Regular treesit buffer
-     (t
-      (let ((lang (reomacs/treesit-rainbow--get-language)))
-        (when lang
-          (setq reomacs/treesit-rainbow--parser (treesit-parser-create lang))
-          (setq reomacs/treesit-rainbow--depth 1)
-          (let ((root (treesit-parser-root-node reomacs/treesit-rainbow--parser)))
-            (when root
-              (reomacs/treesit-rainbow--traverse root))))))))
-
-  (defun reomacs/treesit-rainbow--on-change (old-tree new-tree changed-ranges)
-    "Handle parse tree change - incremental update."
-    ;; For simplicity, just re-highlight the whole buffer
-    ;; A more optimized version would only update affected regions
-    (reomacs/treesit-rainbow--highlight))
-
-  (defvar reomacs/treesit-rainbow--timer nil
-    "Debounce timer for incremental updates.")
-
-  (defun reomacs/treesit-rainbow--debounced-update (&rest _args)
-    "Debounced buffer update."
-    (when reomacs/treesit-rainbow--timer
-      (cancel-timer reomacs/treesit-rainbow--timer))
-    (setq reomacs/treesit-rainbow--timer
-          (run-with-idle-timer 0.1 nil #'reomacs/treesit-rainbow--highlight)))
-
-  (define-minor-mode reomacs/treesit-rainbow-mode
-    "Rainbow delimiters using tree-sitter."
-    :lighter " ()[]"
-    (if reomacs/treesit-rainbow-mode
-        (progn
-          (unless (or (derived-mode-p 'org-mode)
-                      (reomacs/treesit-rainbow--get-language))
-            (message "Tree-sitter not available for this buffer"))
-          (reomacs/treesit-rainbow--highlight)
-          (add-hook 'treesit-after-change-functions
-                     #'reomacs/treesit-rainbow--on-change nil t)
-          (add-hook 'after-change-functions
-                     #'reomacs/treesit-rainbow--debounced-update nil t))
-      (mapc #'delete-overlay reomacs/treesit-rainbow--overlays)
-      (setq reomacs/treesit-rainbow--overlays nil)
-      (dolist (parser reomacs/treesit-rainbow--org-parsers)
-        (treesit-parser-delete parser))
-      (setq reomacs/treesit-rainbow--org-parsers nil)
-      (remove-hook 'treesit-after-change-functions
-                   #'reomacs/treesit-rainbow--on-change t)
-      (remove-hook 'after-change-functions
-                   #'reomacs/treesit-rainbow--debounced-update t)
-      (when reomacs/treesit-rainbow--timer
-        (cancel-timer reomacs/treesit-rainbow--timer))))
-
-  ;; Configuration commands
-  (defun reomacs/treesit-rainbow-cycle-colors ()
-    "Rotate the color palette."
-    (interactive)
-    (let ((first (pop reomacs/treesit-rainbow--colors)))
-      (add-to-list 'reomacs/treesit-rainbow--colors first t)
-      (reomacs/treesit-rainbow--highlight)
-      (message "Colors cycled")))
-
-  (defun reomacs/treesit-rainbow-randomize ()
-    "Randomize colors from current theme."
-    (interactive)
-    (require 'color)
-    (setq reomacs/treesit-rainbow--colors
-          (cl-loop for i below reomacs/treesit-rainbow--num-colors
-                   collect (color-rgb-to-hex
-                            (random 1.0) (random 1.0) (random 1.0) 6)))
-    (reomacs/treesit-rainbow--highlight)
-    (message "Colors randomized"))
-
-  (defun reomacs/treesit-rainbow-set-colors (colors)
-    "Set color palette to COLORS list."
-    (interactive
-     (list (split-string
-            (read-string "Colors (space separated): "
-                        (mapconcat #'identity reomacs/treesit-rainbow--colors " ")))))
-    (setq reomacs/treesit-rainbow--colors colors
-          reomacs/treesit-rainbow--num-colors (length colors))
-    (reomacs/treesit-rainbow--highlight)
-    (message "Colors set to: %s" colors))
-
-  ;; Auto-enable for tree-sitter modes
-  (add-hook 'treesit-after-parse-functions
-            (lambda (_lang)
-              (when (and (treesit-parser-at (point-min))
-                         (not reomacs/treesit-rainbow-mode))
-                (reomacs/treesit-rainbow-mode 1))))
-
-  ;; Auto-enable for org-mode (embedded source blocks)
-  (add-hook 'org-mode-hook #'reomacs/treesit-rainbow-mode)
-
-  ;; Enable globally for testing
-  ;; (global-reomacs/treesit-rainbow-mode 1)
-  #+end_src
+  (add-hook 'reomacs/post-init-hooks #'reomacs-treesit-rainbow-refresh)
+#+end_src
 
 ** Scratch
 

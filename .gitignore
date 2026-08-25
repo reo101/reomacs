@@ -4,3 +4,7 @@
 !early-init.el
 !config.org
 !README.org
+!lisp/
+!lisp/reomacs-treesit-rainbow.el
+!test/
+!test/reomacs-treesit-rainbow-test.el
