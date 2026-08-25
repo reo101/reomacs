@@ -4638,6 +4638,7 @@ From [[https://github.com/xenodium/agent-shell][agent-shell]]
            (tsx-ts-mode . eglot-ensure)
            (bash-ts-mode . eglot-ensure)
            (lua-ts-mode . eglot-ensure)
+           (uiua-ts-mode . eglot-ensure)
            (zig-ts-mode . eglot-ensure)))
 #+end_src
 
@@ -4720,6 +4721,15 @@ LSP config:
 
 #+begin_src emacs-lisp
   (use-package yaml-mode
+    :straight t
+    :defer t)
+#+end_src
+
+*** Uiua
+
+#+begin_src emacs-lisp
+  (use-package uiua-ts-mode
+    :mode "\\.ua\\'"
     :straight t
     :defer t)
 #+end_src
