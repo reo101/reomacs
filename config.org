@@ -3330,12 +3330,17 @@ Sets TERM=dumb and sends EOF to prevent gh from blocking on terminal."
       (process-send-eof proc)
       proc))
 
+  (defconst reomacs/dailies--placeholder "⏳ Fetching forge interactions..."
+    "Placeholder text shown while async fetch is in progress.")
+
+
   (defun reomacs/dailies--make-async-runner (date marker)
     "Create an async runner for DATE with MARKER for insertion.
 Returns a plist with runner functions using async state management.
 Buffer-local settings are captured here while the command still runs
 inside the dailies buffer."
-    (-let* ((state (make-hash-table :test 'eq)))
+    (-let* ((state (make-hash-table :test 'eq))
+            (forge reomacs/dailies-forge))
       (puthash :pending 0 state)
       (puthash :marker marker state)
       (list :date date
@@ -3366,7 +3371,7 @@ inside the dailies buffer."
                                 (when (looking-at (regexp-quote (concat "+ " reomacs/dailies--placeholder)))
                                   (delete-region (point) (line-beginning-position 2))))))
                           (message "%s interactions fetch complete"
-                                   (plist-get runner :forge))
+                                   forge)
                           (set-marker m nil)))))))
 
   (defun reomacs/dailies--fetch-interactions-async (date marker)
@@ -3398,9 +3403,6 @@ Returns a time value or nil."
       (when (re-search-backward "^\\*\\* <\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\)" nil t)
         (-let [date-str (match-string 1)]
           (date-to-time (concat date-str "T00:00:00"))))))
-
-  (defconst reomacs/dailies--placeholder "⏳ Fetching forge interactions..."
-    "Placeholder text shown while async fetch is in progress.")
 
   ;;;###autoload
   (defun reomacs/dailies-insert-interactions (days-back)
@@ -3458,6 +3460,423 @@ DAYS-BACK of nil (no input) uses smart yesterday, 0 means today."
       (set-marker-insertion-type marker t)  ; marker stays put when inserting before it
       (message "Fetching %s interactions for %s..." reomacs/dailies-forge target-date)
       (reomacs/dailies--fetch-interactions-async target-date marker)))
+
+  ;; ----------------------------------------------------------------------
+  ;; ----------------------------------------------------------------------
+  ;; Timesheets: push annotated dailies bullets to Dynamics 365 (Dataverse)
+  ;; ----------------------------------------------------------------------
+  ;; Bullet format:
+  ;;   + [CRB] PP with Alexander, refactors {3h}
+  ;;   + [CRB] Review PR 22178 {30m @13:00}
+  ;;   + Unmarked bullets are never pushed
+  ;; Duration: "2h", "45m", "2h30m", "2h30", "1.5h"; optional @HH:MM start.
+  ;; Bullets already submitted get a ✓ inside the braces and are skipped.
+  ;; Entries stack from `reomacs/dailies-workday-start' unless @pinned.
+
+  (defcustom reomacs/dailies-dataverse-org
+    "https://operations-finance-baringa.crm11.dynamics.com"
+    "Dataverse org root URL used for timesheet submission."
+    :type 'string
+    :group 'reo101)
+
+  (defcustom reomacs/dailies-project-aliases '()
+    "Alist mapping dailies tags (e.g. \"CRB\") to msdyn_project GUIDs.
+Extended automatically when a new tag is resolved via the project
+picker.  Set as a file-local variable in dailies.org."
+    :type '(alist :key-type string :value-type string)
+    :group 'reo101
+    :safe #'listp)
+
+  (defcustom reomacs/dailies-workday-start "09:00"
+    "Clock time the synthetic stacking of entry start times begins at."
+    :type 'string
+    :group 'reo101)
+
+  (defvar reomacs/dailies--dataverse-token-cache nil
+    "Cons cell (EXPIRY-EPOCH . TOKEN) for the Dataverse bearer token.")
+
+  (defun reomacs/dailies--dataverse-token ()
+    "Bearer token for the Dataverse org, minted via az CLI and cached."
+    (or (and reomacs/dailies--dataverse-token-cache
+             (< (float-time) (car reomacs/dailies--dataverse-token-cache))
+             (cdr reomacs/dailies--dataverse-token-cache))
+        (let ((tok (string-trim
+                    (shell-command-to-string
+                     (concat "az account get-access-token --resource "
+                             (shell-quote-argument reomacs/dailies-dataverse-org)
+                             " --query accessToken -o tsv")))))
+          (when (string-empty-p tok)
+            (user-error "Could not obtain Dataverse token via az CLI"))
+          (setq reomacs/dailies--dataverse-token-cache
+                (cons (+ (float-time) 2700) tok))
+          tok)))
+
+  (defun reomacs/dailies--dv-request (method path &optional body)
+    "Synchronous Dataverse request METHOD PATH with optional alist BODY.
+Returns (STATUS . PARSED-JSON-OR-NIL)."
+    (require 'json)
+    (require 'url)
+    (let ((url-request-method method)
+          (url-request-extra-headers
+           `(("Authorization" . ,(concat "Bearer "
+                                   (reomacs/dailies--dataverse-token)))
+             ("Accept" . "application/json")
+             ;; nil header defeats url.el response caching
+             ("If-None-Match" . nil)
+             ,@(when body
+                 '(("Content-Type" . "application/json; charset=utf-8")))))
+          (url-request-data (and body
+                                 (encode-coding-string (json-encode body)
+                                                       'utf-8))))
+      (with-current-buffer
+          (url-retrieve-synchronously
+           (concat reomacs/dailies-dataverse-org "/api/data/v9.2/" path)
+           t)
+        (goto-char (point-min))
+        (let* ((head-end (if (re-search-forward "\r?\n\r?\n" nil t)
+                             (match-beginning 0)
+                           (point-min)))
+               (headers (buffer-substring (point-min) head-end))
+               (status (if (string-match "HTTP/[0-9.]+ +\\([0-9]+\\)" headers)
+                           (string-to-number (match-string 1 headers))
+                         0))
+               (payload (buffer-substring head-end (point-max))))
+          (kill-buffer)
+          (cons status
+                (and (> (length (string-trim payload)) 0)
+                     (ignore-errors
+                       (json-parse-string (string-trim payload)
+                                          :object-type 'alist
+                                          :array-type 'list))))))))
+
+  (defconst reomacs/dailies--duration-re
+    (concat "{\\s-*"
+            "\\(?:\\([0-9]+\\(?:\\.[0-9]+\\)?\\)h\\)?\\s-*"
+            "\\(?:\\([0-9]+\\)m\\)?\\s-*"
+            "\\(?:@\\([0-9]\\{1,2\\}:[0-9]\\{2\\}\\)\\)?\\s-*"
+            "\\(✓\\)?}")
+    "Matches {1.5h}, {45m}, {2h30}, {2h30m}, optional @HH:MM and ✓ flag.
+Groups: 1 hours, 2 minutes, 3 start time, 4 submitted-flag.")
+
+  (defun reomacs/dailies--parse-duration (hours minutes)
+    "Convert HOURS/MINUTES match groups (strings or nil) to whole minutes."
+    (truncate (+ (* (string-to-number (or hours "0")) 60)
+                 (string-to-number (or minutes "0")))))
+
+  (defun reomacs/dailies--collect-timeentries ()
+    "Collect annotated bullets from the day section around point.
+Returns (DATE-STRING . ENTRIES), each entry a plist
+(:desc :tag :minutes :start :marker).  Bullets whose marker carries a
+✓ are skipped so submissions are not duplicated."
+    (save-excursion
+      (unless (re-search-backward "^\\*\\* <\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\)" nil t)
+        (user-error "No day heading above point"))
+      (let* ((date (match-string 1))
+             (day-beg (match-end 0))
+             (day-end (or (save-excursion
+                            (forward-line 1)
+                            (when (re-search-forward "^\\*\\* <" nil t)
+                              (match-beginning 0)))
+                          (point-max)))
+             entries)
+        (goto-char day-beg)
+        (while (< (point) day-end)
+          (let ((line (buffer-substring-no-properties
+                       (line-beginning-position) (line-end-position))))
+            (when (and (string-match "^[ \t]*\\+[ \t]+" line)
+                       (string-match reomacs/dailies--duration-re line)
+                       (not (match-string 4 line)))
+              (let ((hours (match-string 1 line))
+                    (mins (match-string 2 line))
+                    (start (match-string 3 line)))
+                (unless (or hours mins)
+                  (user-error "Bad duration marker in: %s" line))
+                ;; Text after the marker would be silently dropped from
+                ;; the description — refuse instead.
+                (unless (string-blank-p (substring line (match-end 0)))
+                  (user-error "Text after duration marker in: %s — move it before {…}" line))
+                ;; the tag re-match below clobbers match data — capture
+                ;; duration groups before it
+                (push (list :desc (string-trim
+                                   (substring line 0 (match-beginning 0)))
+                            :tag (progn
+                                   (string-match
+                                    "^[ \t]*\\+[ \t]+\\[\\([^]]+\\)\\]" line)
+                                   (match-string 1 line))
+                            :minutes (reomacs/dailies--parse-duration hours mins)
+                            :start start
+                            :marker (copy-marker (line-beginning-position)))
+                      entries))))
+          (forward-line 1))
+        (cons date (nreverse entries)))))
+
+  (defun reomacs/dailies--dv-projects ()
+    "Fetch active projects as alist (NAME . GUID)."
+    (-let [(status . payload)
+           (reomacs/dailies--dv-request
+            "GET"
+            (concat "msdyn_projects?$select=msdyn_projectid,msdyn_subject"
+                    "&$filter=statecode%20eq%200&$top=500"))]
+      (unless (= status 200)
+        (user-error "Project list fetch failed (%s)" status))
+      (--map (cons (alist-get 'msdyn_subject it)
+                   (alist-get 'msdyn_projectid it))
+             (alist-get 'value payload))))
+
+  (defun reomacs/dailies--resolve-project (cell projects file)
+    "Resolve review-row CELL (a tag or project name) to a GUID.
+PROJECTS is the live alist (NAME . GUID); unknown cells prompt once
+and persist the pick into FILE."
+    (or (cdr (assoc cell projects))
+        (alist-get cell reomacs/dailies-project-aliases nil nil #'equal)
+        (let* ((name (completing-read (format "Project for “%s”: " cell)
+                                      (--map (car it) projects) nil t))
+               (guid (cdr (assoc name projects))))
+          (unless guid
+            (user-error "No project picked for %s" cell))
+          ;; Append BEFORE persisting, otherwise the new pick never lands
+          ;; in the written Local Variables line.
+          (setq-local reomacs/dailies-project-aliases
+                      (append reomacs/dailies-project-aliases
+                              (list (cons cell guid))))
+          (reomacs/dailies--remember-project-alias cell guid file)
+          guid)))
+
+  (defun reomacs/dailies--ts-rewrite-locals (alias-line lv-start)
+    "Replace or create the project-aliases Local Variables line.
+ALIAS-LINE and LV-START are pre-rendered strings; operates on the
+current buffer."
+    (goto-char (point-min))
+    (if (re-search-forward
+         "^#\\s-*reomacs/dailies-project-aliases:.*$" nil t)
+        (replace-match alias-line t t)
+      (goto-char (point-min))
+      (if (re-search-forward "^#\\s-*End:[ \t]*$" nil t)
+          (insert alias-line "\n")
+        (goto-char (point-min))
+        (insert lv-start "\n" alias-line "\n# End:\n\n"))))
+
+  (defun reomacs/dailies--remember-project-alias (tag guid file)
+    "Persist TAG → GUID as a one-line file-local alias in FILE.
+Single-line form keeps programmatic updates deterministic.  When a
+buffer visits FILE the line is edited there (unsaved user edits are
+preserved); otherwise FILE is written directly."
+    (let ((alias-line (concat "# reomacs/dailies-project-aliases: ("
+                              (string-join
+                               (--map (format "(\"%s\" . \"%s\")"
+                                              (car it) (cdr it))
+                                      reomacs/dailies-project-aliases)
+                               " ") "))"))
+          ;; NOTE: split so this source doesn't look like a local-variables block.
+          (lv-start (concat "# Local " "Variables:")))
+      (cond
+       ((not file)
+        (message "Cannot persist [%s]: dailies buffer visits no file" tag))
+       ((-when-let (buf (find-buffer-visiting file))
+          (with-current-buffer buf
+            (save-excursion
+              (reomacs/dailies--ts-rewrite-locals alias-line lv-start)))
+          (when (buffer-modified-p buf)
+            (message "Alias staged in %s — save to persist"
+                     (buffer-name buf)))
+          t))
+       (t
+        (with-temp-buffer
+          (insert-file-contents file)
+          (goto-char (point-min))
+          (reomacs/dailies--ts-rewrite-locals alias-line lv-start)
+          (write-region (point-min) (point-max) file))))
+      (message "Remembered [%s] → %.8s…" tag guid)))
+
+
+  (defun reomacs/dailies--tz-offset ()
+    "Current timezone as an ISO-style offset string, e.g. \"+03:00\"."
+    (let ((z (format-time-string "%z")))
+      (format "%s:%s" (substring z 0 3) (substring z 3 5))))
+
+  (defun reomacs/dailies--hm-to-minutes (hm)
+    "Convert \"HH:MM\" string HM to minutes since midnight."
+    (-let* (((h m) (split-string hm ":")))
+      (+ (* (string-to-number h) 60) (string-to-number m))))
+
+  (defun reomacs/dailies--minutes-to-hm (mins)
+    "Convert MINUTES since midnight to \"HH:MM\"."
+    (format "%02d:%02d" (/ mins 60) (% mins 60)))
+
+  (defvar reomacs/dailies--ts-mode-map
+    (let ((map (make-sparse-keymap)))
+      (define-key map (kbd "C-c C-c") #'reomacs/dailies--ts-submit)
+      (define-key map (kbd "q") #'quit-window)
+      map)
+    "Keymap for the *Dailies Timesheet* review buffer.")
+
+  (define-minor-mode reomacs/dailies--ts-review-mode
+    "Minor mode for the *Dailies Timesheet* review buffer.
+Shadows only `C-c C-c'' (submit); org commands stay live, so rows are
+real checkboxes: toggle with `C-c C-x C-b'' (`org-toggle-checkbox'')."
+    :init-value nil
+    :lighter " TS"
+    :keymap reomacs/dailies--ts-mode-map)
+
+  (defun reomacs/dailies-submit-timesheet ()
+    "Submit annotated bullets from the current day section as time entries.
+Bullets need a trailing duration marker like {2h}, {45m} or {1h30};
+an optional @HH:MM pins the start time, otherwise entries stack from
+`reomacs/dailies-workday-start'.  Opens an editable review buffer:
+fix clock ranges/projects/descriptions there, toggle rows with
+C-c C-x C-b, then C-c C-c submits the unchecked ones."
+    (interactive)
+    (-let* (((date . entries) (reomacs/dailies--collect-timeentries)))
+      (when (null entries)
+        (user-error "No {duration}-annotated bullets found in this day section"))
+      (message "Fetching active projects...")
+      ;; Snapshot dailies context FIRST: file-locals from dailies.org are
+      ;; invisible once point moves to the review buffer, and there
+      ;; `current-buffer' would be rbuf itself.
+      (let* ((dailies-buf (current-buffer))
+             (aliases reomacs/dailies-project-aliases)
+             (dv-org reomacs/dailies-dataverse-org)
+             (projects (reomacs/dailies--dv-projects))
+             (rbuf (get-buffer-create "*Dailies Timesheet*"))
+             (cursor (reomacs/dailies--hm-to-minutes reomacs/dailies-workday-start)))
+        (with-current-buffer rbuf
+          (erase-buffer)
+          (org-mode)
+          (reomacs/dailies--ts-review-mode 1)
+          (setq-local reomacs/dailies--ts-date date)
+          (setq-local reomacs/dailies--ts-projects projects)
+          (setq-local reomacs/dailies--ts-dailies-buf dailies-buf)
+          ;; Buffer-local shadows so downstream reads still see dailies.org
+          ;; settings even though this buffer visits no file.
+          (setq-local reomacs/dailies-project-aliases aliases)
+          (setq-local reomacs/dailies-dataverse-org dv-org)
+          (insert (format "* Timesheet %s — C-c C-c submit · C-c C-x C-b toggle · q quit\n\n"
+                          date))
+          (dolist (entry entries)
+            (-let* (((&plist :desc :tag :minutes :start :marker) entry)
+                    (start-min (or (and start (reomacs/dailies--hm-to-minutes start))
+                                   cursor)))
+              (insert (propertize
+                       (format "- [ ] %s–%s | %s | %s\n"
+                               (reomacs/dailies--minutes-to-hm start-min)
+                               (reomacs/dailies--minutes-to-hm (+ start-min minutes))
+                               (or tag "?")
+                               desc)
+                       'reomacs-ts (list :minutes minutes
+                                         :start-min start-min
+                                         :cell (or tag "?")
+                                         :marker marker)))
+              (setq cursor (+ start-min minutes))))
+          (pop-to-buffer rbuf)))))
+
+  ;; These are buffer-locals of the review buffer, set at creation.
+  (defvar reomacs/dailies--ts-date)
+  (defvar reomacs/dailies--ts-projects)
+  (defvar reomacs/dailies--ts-dailies-buf)
+
+  (defun reomacs/dailies--ts-submit ()
+    "POST every unchecked row of the review buffer to Dataverse.
+All checkbox rows are validated FIRST — if any is malformed nothing
+is submitted.  Per-row failures are annotated inline afterwards and
+do not abort the remaining rows."
+    (interactive)
+    (let* ((date reomacs/dailies--ts-date)
+           (projects reomacs/dailies--ts-projects)
+           (dbuf reomacs/dailies--ts-dailies-buf)
+           (dbfile (and (buffer-live-p dbuf) (buffer-file-name dbuf)))
+           (offset (reomacs/dailies--tz-offset))
+           (resolved (make-hash-table :test 'equal))
+           rows)
+      ;; Phase 1 — gather & validate every unchecked row.
+      (save-excursion
+        (goto-char (point-min))
+        (while (re-search-forward
+                "^- \\[\\([ xX]\\)\\] \\([0-9][0-9]:[0-9][0-9]\\)–\\([0-9][0-9]:[0-9][0-9]\\) | \\([^|\n]*\\) | \\(.*\\)$"
+                nil t)
+          (let* ((box (match-string 1))
+                 (sh-str (match-string 2))
+                 (eh-str (match-string 3))
+                 (cell (string-trim (match-string 4)))
+                 (desc (string-trim (match-string 5)))
+                 (props (get-text-property (match-beginning 0) 'reomacs-ts))
+                 (start-min (plist-get props :start-min))
+                 (marker (plist-get props :marker))
+                 (minutes (- (reomacs/dailies--hm-to-minutes eh-str)
+                             (reomacs/dailies--hm-to-minutes sh-str))))
+            (when (string= box " ")
+              (unless (> minutes 0)
+                (user-error
+                 "Row “%.40s…”: clock range gives %s min — fix it before submitting"
+                 desc minutes))
+              (push (list :row-beg (match-beginning 0)
+                          :desc desc :cell cell :minutes minutes
+                          :start-min start-min :marker marker)
+                    rows))))
+        (setq rows (nreverse rows)))
+      ;; Malformed checkbox lines (broken | columns etc.) never matched
+      ;; above and would be silently skipped — refuse instead.
+      (save-excursion
+        (goto-char (point-min))
+        (while (re-search-forward "^- \\[[^]]*\\]" nil t)
+          (unless (get-text-property (match-beginning 0) 'reomacs-ts)
+            (user-error
+             "Unparseable row at line %d — fix or remove it before submitting"
+             (line-number-at-pos)))))
+      (unless rows
+        (user-error "Nothing to submit — no unchecked rows"))
+      ;; Phase 2 — submit, annotating per-row failures inline.
+      (let ((ok 0)
+            (failed 0))
+        (dolist (row rows)
+          (-let* (((&plist :row-beg :desc :cell :minutes :start-min :marker) row))
+            (condition-case err
+                (-let* ((guid (-if-let (cached (gethash cell resolved))
+                                  cached
+                                (let ((g (reomacs/dailies--resolve-project
+                                          cell projects dbfile)))
+                                  (puthash cell g resolved)
+                                  g)))
+                        (iso (lambda (mins)
+                               (format "%sT%02d:%02d:00%s"
+                                       date (/ mins 60) (% mins 60) offset)))
+                        ((status . payload)
+                         (reomacs/dailies--dv-request
+                          "POST" "msdyn_timeentries"
+                          `((msdyn_date . ,(concat date "T00:00:00" offset))
+                            (msdyn_start . ,(funcall iso start-min))
+                            (msdyn_end . ,(funcall iso (+ start-min minutes)))
+                            (msdyn_duration . ,minutes)
+                            (msdyn_description . ,desc)
+                            (msdyn_project@odata.bind
+                             . ,(format "/msdyn_projects(%s)" guid))))))
+                  (unless (memq status '(201 204))
+                    (error "Dataverse %s: %s" status
+                           (or (ignore-errors
+                                 (alist-get 'message
+                                            (alist-get 'error payload)))
+                               "no detail")))
+                  (save-excursion
+                    (goto-char row-beg)
+                    (search-forward "[" (+ row-beg 8) t)
+                    (delete-char 1)
+                    (insert "x"))
+                  (setq ok (1+ ok))
+                  (when (and (buffer-live-p dbuf) (marker-buffer marker))
+                    (with-current-buffer dbuf
+                      (save-excursion
+                        (goto-char marker)
+                        (end-of-line)
+                        (when (and (search-backward "{" (line-beginning-position) t)
+                                   (search-forward "}" (line-end-position) t))
+                          (backward-char 1)
+                          (insert "✓"))))))
+              (error
+               (setq failed (1+ failed))
+               (save-excursion
+                 (goto-char row-beg)
+                 (end-of-line)
+                 (insert (format "  ;; ERROR: %s" (error-message-string err))))))))
+        (message "Timesheet submit: %d ok, %d failed" ok failed))))
 
   ;;;###autoload
   (defun reomacs/org-heading-to-markdown-clipboard (&optional target-level md-level-offset)
