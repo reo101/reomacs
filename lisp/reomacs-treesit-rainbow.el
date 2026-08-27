@@ -167,18 +167,50 @@ LANGUAGE selects any grammar-specific semantic pairs."
      nil reomacs-treesit-rainbow--elisp-keywords 'append))
   (when font-lock-mode (font-lock-flush)))
 
+(defun reomacs-treesit-rainbow--remove-display-replacements (start end)
+  "Remove rainbow-owned display replacements between START and END."
+  (let ((position start))
+    (while (< position end)
+      (let* ((next (next-single-property-change
+                    position 'display nil end))
+             (display (get-text-property position 'display)))
+        (when (and (stringp display)
+                   (> (length display) 0)
+                   (get-text-property
+                    0 'reomacs-treesit-rainbow display))
+          (remove-text-properties position next '(display nil)))
+        (setq position next)))))
+
+(defun reomacs-treesit-rainbow--after-change (start end _old-length)
+  "Remove stale display replacements around changed text from START to END."
+  (with-silent-modifications
+    (reomacs-treesit-rainbow--remove-display-replacements
+     (max (point-min) (- start 2))
+     (min (point-max) (+ end 2)))))
+
 (defun reomacs-treesit-rainbow--fontify-delimiter
     (node override start end &rest _)
   "Fontify delimiter NODE between START and END using OVERRIDE."
   (when (reomacs-treesit-rainbow--delimiter-eligible-p
          node reomacs-treesit-rainbow--language)
-    (treesit-fontify-with-override
-     (treesit-node-start node) (treesit-node-end node)
-     (reomacs-treesit-rainbow--face
-      (reomacs-treesit-rainbow--depth
-       node reomacs-treesit-rainbow--language)
-      (treesit-node-start node))
-     override start end)))
+    (let* ((node-start (treesit-node-start node))
+           (node-end (treesit-node-end node))
+           (token (treesit-node-type node))
+           (face (reomacs-treesit-rainbow--face
+                  (reomacs-treesit-rainbow--depth
+                   node reomacs-treesit-rainbow--language)
+                  node-start)))
+      (treesit-fontify-with-override
+       node-start node-end face override start end)
+      ;; Maple Mono composes `>>' into one glyph with one foreground.
+      ;; A same-looking display string keeps nested closing faces distinct.
+      (when (and (string= token ">")
+                 (eq (char-after node-end) ?>))
+        (put-text-property
+         node-start node-end 'display
+         (propertize token
+                     'face face
+                     'reomacs-treesit-rainbow t))))))
 
 (defun reomacs-treesit-rainbow--settings (language spec)
   "Build native font-lock settings for LANGUAGE using SPEC."
@@ -192,10 +224,15 @@ LANGUAGE selects any grammar-specific semantic pairs."
 (defun reomacs-treesit-rainbow--teardown ()
   "Remove tree-sitter rainbow font-lock settings from this buffer."
   (when reomacs-treesit-rainbow--installed-p
+    (with-silent-modifications
+      (reomacs-treesit-rainbow--remove-display-replacements
+       (point-min) (point-max)))
     (setq-local treesit-font-lock-settings
                 reomacs-treesit-rainbow--original-settings)
     (setq-local treesit-font-lock-feature-list
                 reomacs-treesit-rainbow--original-features)
+    (remove-hook 'after-change-functions
+                 #'reomacs-treesit-rainbow--after-change t)
     (treesit-font-lock-recompute-features)
     (when font-lock-mode (font-lock-flush)))
   (setq reomacs-treesit-rainbow--language nil
@@ -215,6 +252,8 @@ LANGUAGE selects any grammar-specific semantic pairs."
           treesit-font-lock-settings
           reomacs-treesit-rainbow--original-features
           treesit-font-lock-feature-list)
+    (add-hook 'after-change-functions
+              #'reomacs-treesit-rainbow--after-change nil t)
     (setq-local treesit-font-lock-settings
                 (append treesit-font-lock-settings
                         (reomacs-treesit-rainbow--settings language spec)))

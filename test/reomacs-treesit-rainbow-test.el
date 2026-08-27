@@ -11,6 +11,13 @@
   (let ((value (get-text-property position 'face)))
     (memq face (if (listp value) value (list value)))))
 
+(defun reomacs-treesit-rainbow-test--display-face-p (position face)
+  "Return non-nil when POSITION displays a string using FACE."
+  (let ((display (get-text-property position 'display)))
+    (when (and (stringp display) (> (length display) 0))
+      (let ((value (get-text-property 0 'face display)))
+        (memq face (if (listp value) value (list value)))))))
+
 (defun reomacs-treesit-rainbow-test--positions (character)
   "Return buffer positions containing CHARACTER."
   (save-excursion
@@ -64,7 +71,11 @@
       (should (reomacs-treesit-rainbow-test--face-p
                inner-close 'rainbow-delimiters-depth-3-face))
       (should (reomacs-treesit-rainbow-test--face-p
-               outer-close 'rainbow-delimiters-depth-2-face)))))
+               outer-close 'rainbow-delimiters-depth-2-face))
+      (should-not (get-text-property template-close 'display))
+      (should (reomacs-treesit-rainbow-test--display-face-p
+               inner-close 'rainbow-delimiters-depth-3-face))
+      (should-not (get-text-property outer-close 'display)))))
 
 (ert-deftest reomacs-treesit-rainbow-rust-generics-and-closure ()
   (require 'rust-ts-mode)
@@ -158,16 +169,40 @@
       (should (reomacs-treesit-rainbow-test--face-p
                outer-close 'rainbow-delimiters-depth-1-face)))))
 
+(ert-deftest reomacs-treesit-rainbow-splits-adjacent-closers-only ()
+  (require 'c-ts-mode)
+  (reomacs-treesit-rainbow-test--with-mode
+      'cpp #'c++-ts-mode "Vec<Vec<T>> x; int y = a >> b;"
+    (pcase-let ((`(,inner ,outer ,shift-left ,shift-right)
+                 (reomacs-treesit-rainbow-test--positions ?>)))
+      (should (get-text-property inner 'display))
+      (should-not (get-text-property outer 'display))
+      (should-not (get-text-property shift-left 'display))
+      (should-not (get-text-property shift-right 'display))
+      (goto-char outer)
+      (insert " ")
+      (font-lock-ensure)
+      (pcase-let ((`(,spaced-inner ,spaced-outer . ,_)
+                   (reomacs-treesit-rainbow-test--positions ?>)))
+        (should-not (get-text-property spaced-inner 'display))
+        (should-not (get-text-property spaced-outer 'display))))))
+
 (ert-deftest reomacs-treesit-rainbow-restores-font-lock-state ()
   (require 'c-ts-mode)
   (reomacs-treesit-rainbow-test--with-mode
-      'cpp #'c++-ts-mode "Vec<T> x;"
+      'cpp #'c++-ts-mode "Vec<Vec<T>> x;"
     (let ((original-settings reomacs-treesit-rainbow--original-settings)
-          (original-features reomacs-treesit-rainbow--original-features))
+          (original-features reomacs-treesit-rainbow--original-features)
+          (closers (reomacs-treesit-rainbow-test--positions ?>)))
       (should reomacs-treesit-rainbow-mode)
+      (should (get-text-property (car closers) 'display))
       (reomacs-treesit-rainbow-mode -1)
       (should (eq treesit-font-lock-settings original-settings))
-      (should (eq treesit-font-lock-feature-list original-features)))))
+      (should (eq treesit-font-lock-feature-list original-features))
+      (should-not (memq #'reomacs-treesit-rainbow--after-change
+                        after-change-functions))
+      (dolist (position closers)
+        (should-not (get-text-property position 'display))))))
 
 (ert-deftest reomacs-treesit-rainbow-buffer-state-is-local ()
   (require 'c-ts-mode)
