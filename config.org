@@ -4234,9 +4234,10 @@ From [[https://github.com/xenodium/agent-shell][agent-shell]]
           t)
       (error nil)))
 
-  (defun reomacs/rust-analyzer-command ()
-    "Return rust-analyzer command, preferring lspmux on port 27631 if available."
-    (if (reomacs/lspmux-available-p 27631)
+  (defun reomacs/rust-analyzer-contact (_interactive _project)
+    "Connect to lspmux when available, otherwise start rust-analyzer."
+    (if (and (executable-find "nc")
+             (reomacs/lspmux-available-p 27631))
         '("nc" "127.0.0.1" "27631"
           :initializationOptions (:lspMux (:version "1"
                                            :method "connect"
@@ -4246,44 +4247,25 @@ From [[https://github.com/xenodium/agent-shell][agent-shell]]
   (use-package eglot
     :straight (:type built-in)
     :custom
-    ;; Enable events buffer for debugging (view with M-x eglot-events-buffer)
-    (eglot-events-buffer-size 100000)
-    ;; Show LSP progress notifications (like fidget.nvim)
-    (eglot-report-progress t)
-
-    ;; Load language-specific LSP configs from lsp/ directory
-    (eglot-server-programs
-     (->> (directory-files (expand-file-name "lsp" user-emacs-directory) nil "\\.el$")
-          (--map (expand-file-name it (expand-file-name "lsp" user-emacs-directory)))
-          (--map (ignore-errors
-                   (-> (with-temp-buffer
-                         (insert-file-contents it)
-                         (read (current-buffer)))
-                       eval)))
-          (--filter it)
-          (--map (let ((modes (cdr (assoc 'modes it)))
-                       (cmd (cdr (assoc 'server-name it))))
-                   (cons modes (if (stringp cmd) (list cmd) cmd))))))
-
-    ;; Global workspace config (mirroring nvim rustaceanvim settings)
-    (eglot-workspace-configuration
+    (eglot-events-buffer-config '(:size 100000 :format full))
+    :init
+    ;; This is a plain buffer-local variable, not a Customize option.
+    (setq-default
+     eglot-workspace-configuration
      '(:python (:analysis (:autoSearchPaths t :useLibraryCodeForTypes t))
-       :rust-analyzer (:procMacro (:enable t)
-                       :checkOnSave t
-                       :files (:excludeDirs '(".direnv"))
-                       :assist (:importGranularity "module"
-                                :importPrefix "self")
-                       :cargo (:loadOutDirsFromCheck t
-                               :features "all"))
-       :pylsp (:configurationSources '("flake8"))))
-
+       :rust-analyzer (:files (:exclude [".direnv"])
+                       :imports (:granularity (:group "module")
+                                 :prefix "self"))
+       :pylsp (:configurationSources ["flake8"])))
     :config
-    ;; Set rust-analyzer command dynamically (with lspmux support)
     (add-to-list 'eglot-server-programs
-                 `(rust-ts-mode . ,(reomacs/rust-analyzer-command)))
-
+                 (cons '(rust-ts-mode rust-mode)
+                       #'reomacs/rust-analyzer-contact))
+    ;; Emacs 30's built-in table knows `zig-mode', but not `zig-ts-mode'.
+    (add-to-list 'eglot-server-programs '(zig-ts-mode "zls"))
     :hook ((python-ts-mode . eglot-ensure)
            (rust-ts-mode . eglot-ensure)
+           (rust-mode . eglot-ensure)
            (go-ts-mode . eglot-ensure)
            (typescript-ts-mode . eglot-ensure)
            (tsx-ts-mode . eglot-ensure)
@@ -4291,23 +4273,191 @@ From [[https://github.com/xenodium/agent-shell][agent-shell]]
            (lua-ts-mode . eglot-ensure)
            (uiua-ts-mode . eglot-ensure)
            (zig-ts-mode . eglot-ensure)))
+
+  (use-package eglot-x
+    :straight (:host github :repo "nemethf/eglot-x")
+    :after eglot
+    :demand t
+    :custom
+    ;; Eglot 30 already negotiates the standard position encoding.
+    (eglot-x-enable-encoding-negotiation nil)
+    ;; The menu bar is disabled; the transient below is the useful UI.
+    (eglot-x-enable-menu nil)
+    :config
+    (unless (bound-and-true-p eglot-x--enabled)
+      (eglot-x-setup))
+
+    (require 'transient)
+    (transient-define-prefix reomacs/rust-menu ()
+      "Rust and rust-analyzer commands."
+      [["Navigate"
+        ("d" "Open docs" eglot-x-open-external-documentation)
+        ("g" "References/targets" eglot-x-find-refs)
+        ("s" "Workspace symbol" eglot-x-find-workspace-symbol)]
+       ["Run"
+        ("r" "Runnable" eglot-x-ask-runnables)
+        ("t" "Related test" eglot-x-ask-related-tests)]
+       ["Edit"
+        ("a" "Code action" eglot-code-actions)
+        ("e" "Expand macro" eglot-x-expand-macro)
+        ("j" "Join lines" eglot-x-join-lines)
+        ("x" "Structural replace" eglot-x-structural-search-replace)]
+       ["Inspect/refresh"
+        ("h" "Hover actions" eglot-x-hover-actions)
+        ("i" "Inlay hints" eglot-inlay-hints-mode)
+        ("l" "Memory layout" eglot-x-view-recursive-memory-layout)
+        ("w" "Reload workspace" eglot-x-reload-workspace)
+        ("p" "Rebuild proc macros" eglot-x-rebuild-proc-macros)]
+       ["Debug"
+        ("D" "Debug binary" reomacs/dape-rust)
+        ("b" "Breakpoint" dape-breakpoint-toggle)
+        ("c" "Continue" dape-continue)
+        ("n" "Next" dape-next)
+        ("f" "Step in" dape-step-in)
+        ("o" "Step out" dape-step-out)
+        ("R" "Restart" dape-restart)
+        ("q" "Quit" dape-quit)]])
+
+    (with-eval-after-load 'rust-ts-mode
+      (keymap-set rust-ts-mode-map "C-c r" #'reomacs/rust-menu))
+    (with-eval-after-load 'rust-mode
+      (keymap-set rust-mode-map "C-c r" #'reomacs/rust-menu)))
+
+  (use-package dape
+    :straight (:host github :repo "svaante/dape")
+    :commands (dape dape-breakpoint-toggle dape-continue dape-next
+                    dape-step-in dape-step-out dape-restart dape-quit)
+    :preface
+    (defvar dape-command)
+    (defvar dape-configs)
+    (defvar reomacs/dape-breakpoints-loaded-p nil)
+    (declare-function dape-cwd "dape")
+    :custom
+    (dape-buffer-window-arrangement 'right)
+    :init
+    (defun reomacs/dape-rust-target ()
+      "Return Cargo root, package, target, and executable for a binary."
+      (let* ((source-directory
+              (if buffer-file-name
+                  (file-name-directory buffer-file-name)
+                default-directory))
+             (cargo-root
+              (or (locate-dominating-file source-directory "Cargo.toml")
+                  (user-error "No Cargo.toml above the current buffer")))
+             (default-directory cargo-root)
+             (metadata
+              (condition-case err
+                  (json-parse-string
+                   (string-join
+                    (process-lines
+                     "cargo" "metadata" "--format-version" "1" "--no-deps")
+                    "\n")
+                   :object-type 'plist
+                   :array-type 'list)
+                (error
+                 (user-error "Cargo metadata failed: %s"
+                             (error-message-string err)))))
+             (target-directory (plist-get metadata :target_directory))
+             candidates)
+        (dolist (package (plist-get metadata :packages))
+          (dolist (target (plist-get package :targets))
+            (when (member "bin" (plist-get target :kind))
+              (let ((package-name (plist-get package :name))
+                    (target-name (plist-get target :name)))
+                (push
+                 (cons (format "%s (%s)" target-name package-name)
+                       (list cargo-root package-name target-name
+                             (file-name-concat
+                              target-directory "debug" target-name)))
+                 candidates)))))
+        (unless candidates
+          (user-error "Cargo metadata contains no binary targets"))
+        (setq candidates
+              (sort candidates
+                    (lambda (a b) (string-lessp (car a) (car b)))))
+        (cdr (assoc (if (cdr candidates)
+                        (completing-read "Cargo binary: " candidates nil t)
+                      (caar candidates))
+                    candidates))))
+
+    (defun reomacs/dape-rust-config (config)
+      "Add a Cargo binary and build command to Dape CONFIG."
+      (if (plist-get config :program)
+          config
+        ;; ponytail: native dev-profile binaries only; override `:program'
+        ;; and `compile' for tests, examples, release, or cross builds.
+        (pcase-let ((`(,cargo-root ,package ,target ,program)
+                     (reomacs/dape-rust-target)))
+          (setq config
+                (plist-put
+                 (plist-put config 'command-cwd cargo-root)
+                 :cwd cargo-root))
+          (unless (plist-member config 'compile)
+            (setq config
+                  (plist-put
+                   config 'compile
+                   (format "cargo build --package %s --bin %s"
+                           (shell-quote-argument package)
+                           (shell-quote-argument target)))))
+          (plist-put config :program program))))
+
+    (defun reomacs/dape-rust ()
+      "Start Dape with an available Rust LLDB adapter."
+      (interactive)
+      (require 'dape)
+      (let ((dape-command
+             (cond
+              ((executable-find "codelldb") '(codelldb-rust))
+              ((executable-find "lldb-dap") '(lldb-dap-rust))
+              (t (user-error
+                  "Neither codelldb nor lldb-dap is available in PATH")))))
+        (call-interactively #'dape)))
+
+    :config
+    ;; Replace Dape's generic `a.out' Rust entries with Cargo-aware ones.
+    (dolist (name '(lldb-vscode lldb-dap))
+      (when-let ((config (alist-get name dape-configs)))
+        (setf (alist-get name dape-configs)
+              (plist-put
+               config 'modes
+               (seq-remove
+                (lambda (mode)
+                  (memq mode '(rust-mode rust-ts-mode rustic-mode)))
+                (plist-get config 'modes))))))
+
+    (setf (alist-get 'lldb-dap-rust dape-configs)
+          '(modes (rust-mode rust-ts-mode)
+            ensure dape-ensure-command
+            fn reomacs/dape-rust-config
+            command-cwd dape-command-cwd
+            command "lldb-dap"
+            :type "lldb-dap"
+            :request "launch"
+            :cwd dape-cwd
+            :args []
+            :stopOnEntry nil))
+    (setf (alist-get 'codelldb-rust dape-configs)
+          '(modes (rust-mode rust-ts-mode)
+            ensure dape-ensure-command
+            fn reomacs/dape-rust-config
+            command-cwd dape-command-cwd
+            command "codelldb"
+            command-args ("--port" :autoport)
+            host "localhost"
+            port :autoport
+            :type "lldb"
+            :request "launch"
+            :cwd dape-cwd
+            :args []
+            :stopOnEntry nil))
+
+    (unless reomacs/dape-breakpoints-loaded-p
+      (dape-breakpoint-load)
+      (setq reomacs/dape-breakpoints-loaded-p t))
+    (add-hook 'kill-emacs-hook #'dape-breakpoint-save))
 #+end_src
 
 ** Language-Specific
-
-*** Python
-
-LSP config:
-#+begin_src emacs-lisp :tangle lsp/python.el
-  '((server-name . "pylsp")
-    (modes . (python-mode))
-    (root-markers . ("pyproject.toml" "setup.py" "setup.cfg" "requirements.txt" "Pipfile")))
-#+end_src
-
-Mode setup:
-#+begin_src emacs-lisp :tangle no
-  ;; Python treesit already configured globally
-#+end_src
 
 *** Rust
 
@@ -4317,55 +4467,12 @@ Mode setup:
     :defer t)
 #+end_src
 
-*** Go
-
-LSP config:
-#+begin_src emacs-lisp :tangle lsp/go.el
-  '((server-name . "gopls")
-    (modes . (go-mode))
-    (root-markers . ("go.mod" "go.sum")))
-#+end_src
-
-*** TypeScript
-
-LSP config:
-#+begin_src emacs-lisp :tangle lsp/typescript.el
-  '((server-name . "typescript-language-server" "--stdio")
-    (modes . (typescript-mode tsx-mode))
-    (root-markers . ("package.json" "tsconfig.json")))
-#+end_src
-
-*** Bash
-
-LSP config:
-#+begin_src emacs-lisp :tangle lsp/bash.el
-  '((server-name . "bash-language-server" "start")
-    (modes . (bash-mode sh-mode))
-    (root-markers . ("package.json")))
-#+end_src
-
-*** Lua
-
-LSP config:
-#+begin_src emacs-lisp :tangle lsp/lua.el
-  '((server-name . "lua-language-server")
-    (modes . (lua-mode))
-    (root-markers . ("lua" ".lua-format")))
-#+end_src
-
 *** Zig
 
 #+begin_src emacs-lisp
   (use-package zig-ts-mode
     :straight t
     :defer t)
-#+end_src
-
-LSP config:
-#+begin_src emacs-lisp :tangle lsp/zig.el
-  '((server-name . "zls")
-    (modes . (zig-ts-mode))
-    (root-markers . ("build.zig" "build.zig.zon")))
 #+end_src
 
 *** YAML
