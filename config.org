@@ -4436,6 +4436,11 @@ From [[https://github.com/xenodium/agent-shell][agent-shell]]
                                            :server "rust-analyzer")))
       '("rust-analyzer")))
 
+  (use-package eldoc-box
+    :after evil
+    :bind (:map evil-normal-state-map
+                ("K" . eldoc-box-help-at-point)))
+
   (use-package eglot
     :straight (:type built-in)
     :custom
