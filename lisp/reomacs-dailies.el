@@ -802,7 +802,9 @@ Pushes have no queryable Azure feed and are not fetched."
   "Insert git forge interactions asynchronously.
 Queries the forge configured by `reomacs/dailies-forge' and replaces a
 placeholder when requests finish.  DAYS-BACK nil uses the previous
-workday, while zero uses today."
+workday, while zero uses today.  GitHub push history is limited to its
+retained Events API window.  Azure review discovery covers currently
+assigned PRs and PRs whose lifecycle changed on the requested date."
   (interactive
    (list
     (let ((input
