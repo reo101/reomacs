@@ -26,10 +26,34 @@
       (concat "+ One {2h}\n"
               "+ Two {45m @13:00}\n"
               "+ Three {1.5h✓}\n"
+              "+ Estimate {1h}, actual {2h}\n"
               "+ No duration\n")
     (should (= (reomacs/dailies--sum-duration-minutes
                 (point-min) (point-max))
-               255))))
+               375))))
+
+(ert-deftest reomacs-dailies-canonicalizes-repository-identities ()
+  (dolist (case '(("owner/repo.with.dot" . "owner/repo.with.dot")
+                  ("git@github.com:owner/repo.git" . "owner/repo")
+                  ("https://user@dev.azure.com/org/project/_git/repo"
+                   . "org/project/repo")
+                  ("dev.azure.com/org/project/_git/repo"
+                   . "org/project/repo")))
+    (should (equal (reomacs/dailies--canonical-repo-id (car case))
+                   (cdr case))))
+  (should (equal (reomacs/dailies--az-org-name
+                  "https://dev.azure.com/baringa/")
+                 "baringa")))
+
+(ert-deftest reomacs-dailies-safe-locals-reject-code-and-bad-values ()
+  (should (safe-local-variable-p
+           'reomacs/dailies-repo-aliases '(("owner/repo" . "Name"))))
+  (should-not (safe-local-variable-p
+               'reomacs/dailies-repo-aliases
+               '(("owner/repo" . (lambda () (shell-command "false"))))))
+  (should (safe-local-variable-p 'reomacs/dailies-forge 'azure))
+  (should-not (safe-local-variable-p
+               'reomacs/dailies-forge 'shell-command)))
 
 (ert-deftest reomacs-dailies-renders-day-and-week-status-overlays ()
   (reomacs-dailies-test--with-org
@@ -53,8 +77,7 @@
   (reomacs-dailies-test--with-org
       "* Week 2099-W01\n** DONE <2099-01-01 Thu>\n+ Existing {8h}\n"
     (let ((buffer (current-buffer)))
-      (setq-local reomacs/dailies-flat-layout t
-                  reomacs/dailies-daily-target-hours 8)
+      (setq-local reomacs/dailies-daily-target-hours 8)
       (cl-letf (((symbol-function 'reomacs/dailies--buffer)
                  (lambda () buffer))
                 ((symbol-function 'reomacs/dailies-refresh-week-status)
@@ -89,10 +112,40 @@
                      "- Review [PR 1](https://example.test/pr/1) using `uom` {2h}"))
       (should-not (buffer-modified-p)))))
 
-(ert-deftest reomacs-dailies-has-no-dynamics-submission-path ()
+(ert-deftest reomacs-dailies-resolves-the-exact-visiting-buffer ()
+  (let* ((left-dir (make-temp-file "dailies-left-" t))
+         (right-dir (make-temp-file "dailies-right-" t))
+         (left-file (expand-file-name "dailies.org" left-dir))
+         (right-file (expand-file-name "dailies.org" right-dir))
+         left-buffer
+         right-buffer)
+    (unwind-protect
+        (progn
+          (write-region "" nil left-file nil 'silent)
+          (write-region "" nil right-file nil 'silent)
+          (setq left-buffer (find-file-noselect left-file)
+                right-buffer (find-file-noselect right-file))
+          (let ((reomacs/dailies-file right-file))
+            (should (eq (reomacs/dailies--buffer) right-buffer))
+            (should (reomacs/dailies--buffer-p right-buffer))
+            (should-not (reomacs/dailies--buffer-p left-buffer))))
+      (when (buffer-live-p left-buffer) (kill-buffer left-buffer))
+      (when (buffer-live-p right-buffer) (kill-buffer right-buffer))
+      (delete-directory left-dir t)
+      (delete-directory right-dir t))))
+
+(ert-deftest reomacs-dailies-has-no-obsolete-submission-or-layout-paths ()
   (dolist (symbol '(reomacs/dailies-submit-timesheet
                     reomacs/dailies--dv-request
-                    reomacs/dailies--dataverse-token))
-    (should-not (fboundp symbol))))
+                    reomacs/dailies--dataverse-token
+                    reomacs/dailies-insert-interactions-async
+                    reomacs/dailies--fetch-interactions
+                    reomacs/dailies--make-sync-runner
+                    reomacs/dailies--yesterday-label))
+    (should-not (fboundp symbol)))
+  (dolist (symbol '(reomacs/dailies-flat-layout
+                    reomacs/dailies-buffer-predicate
+                    reomacs/dailies-event-handlers))
+    (should-not (boundp symbol))))
 
 ;;; reomacs-dailies-test.el ends here

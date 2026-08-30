@@ -14,50 +14,32 @@
 (require 'dash)
 (require 'json)
 (require 'org)
+(require 'seq)
 (require 'subr-x)
 
 (defcustom reomacs/dailies-file "~/Projects/Baringa/dailies.org"
-  "Path to the dailies.org file for tracking daily work.
-Fallback only — an open dailies buffer always wins (see
-`reomacs/dailies-buffer-predicate')."
+  "Path to the Org file used for work dailies."
   :type 'file
   :group 'reo101)
 
-(defcustom reomacs/dailies-buffer-predicate
-  (lambda (buf)
-    (string= (buffer-name buf)
-             (file-name-nondirectory (expand-file-name reomacs/dailies-file))))
-  "Predicate deciding whether BUF counts as the dailies buffer.
-Defaults to matching the buffer name against the basename of
-`reomacs/dailies-file'; customize for a different naming scheme."
-  :type 'function
-  :group 'reo101)
+(defun reomacs/dailies--buffer-p (&optional buffer)
+  "Return non-nil when BUFFER visits `reomacs/dailies-file'."
+  (when-let* ((buffer (or buffer (current-buffer)))
+              (file (buffer-file-name buffer)))
+    (file-equal-p file (expand-file-name reomacs/dailies-file))))
 
 (defun reomacs/dailies--buffer ()
-  "Return the dailies buffer.
-Prefers a live buffer matching `reomacs/dailies-buffer-predicate'
-(so commands operate on what you are looking at); falls back to
-opening `reomacs/dailies-file'."
-  (or (-first (lambda (buf) (funcall reomacs/dailies-buffer-predicate buf))
-              (buffer-list))
-      (find-file-noselect (expand-file-name reomacs/dailies-file))))
-
-(defcustom reomacs/dailies-flat-layout nil
-  "When non-nil, place bullets directly below each date heading.
-In this layout `reomacs/dailies-new-day' does not create Yesterday or
-Today subsections and does not copy content from the previous date.
-Intended as a safe file-local variable."
-  :type 'boolean
-  :group 'reo101
-  :safe #'booleanp)
+  "Return the buffer visiting `reomacs/dailies-file', opening it if needed."
+  (let ((file (expand-file-name reomacs/dailies-file)))
+    (or (get-file-buffer file)
+        (find-file-noselect file))))
 
 (defcustom reomacs/dailies-daily-target-hours nil
   "Daily hours target, or nil to disable day/week status displays.
-The weekly target is five times this value.  When set,
-`reomacs/dailies-new-day' also starts an ISO-week heading when needed."
+The weekly target is five times this value."
   :type '(choice (const :tag "Disabled" nil) number)
   :group 'reo101
-  :safe #'numberp)
+  :safe (lambda (value) (and (numberp value) (> value 0))))
 
 (defun reomacs/dailies--week-id (time)
   "Return ISO week identifier for TIME, such as \"2026-W35\"."
@@ -86,80 +68,46 @@ Return nil when point is not inside a level-two date subtree."
 
 ;;;###autoload
 (defun reomacs/dailies-new-day ()
-  "Create a new day entry in the dailies file.
-Find the last date entry and create one for today, or the next workday
-if that date already exists.  With `reomacs/dailies-flat-layout', put
-a blank bullet directly below the date heading.  Otherwise copy the
-previous Today section and create the usual Yesterday/Today sections."
+  "Create today's flat dailies entry, or the next workday if it exists."
   (interactive)
-  (require 'calendar)
-  (-let* ((dailies-buf (reomacs/dailies--buffer))
-          (today (calendar-current-date))
-          (today-time (encode-time 0 0 0 (nth 1 today) (nth 0 today) (nth 2 today)))
-          (last-date-pos nil)
-          (last-date-str nil)
-          (last-today-content nil))
+  (let* ((dailies-buf (reomacs/dailies--buffer))
+         (today (calendar-current-date))
+         (today-time (encode-time 0 0 0
+                                  (nth 1 today) (nth 0 today) (nth 2 today)))
+         last-date-pos
+         last-date-str)
     (with-current-buffer dailies-buf
       (goto-char (point-min))
-      ;; Find all date headings through Org so TODO/priority/tags are metadata.
       (while (re-search-forward org-heading-regexp nil t)
         (goto-char (match-beginning 0))
-        (-when-let (date (reomacs/dailies--date-at-heading))
+        (when-let* ((date (reomacs/dailies--date-at-heading)))
           (setq last-date-pos (point)
                 last-date-str date))
         (forward-line 1))
-      (unless (and last-date-pos last-date-str)
+      (unless last-date-pos
         (user-error "No date entries found in dailies file"))
-      ;; Classic layout copies the latest Today section forward.
-      (unless reomacs/dailies-flat-layout
-        (goto-char last-date-pos)
-        (save-excursion
-          (when (re-search-forward "^\\*\\*\\* Today\n" nil t)
-            (let ((start (point)))
-              (if (re-search-forward "^\\*\\{1,3\\} " nil t)
-                  (setq last-today-content
-                        (string-trim-right
-                         (buffer-substring-no-properties start (match-beginning 0))))
-                (setq last-today-content
-                      (string-trim-right
-                       (buffer-substring-no-properties start (point-max)))))))))
-      ;; Parse last date and create new entry
-      (-let* ((parts (split-string last-date-str "-"))
-              (last-time (encode-time 0 0 0
-                                      (string-to-number (nth 2 parts))
-                                      (string-to-number (nth 1 parts))
-                                      (string-to-number (nth 0 parts))))
-              (last-is-today-or-later (>= (float-time last-time) (float-time today-time)))
-              (new-time (if last-is-today-or-later
-                            (reomacs/dailies--next-workday last-time)
-                          today-time))
-              (new-date-str (format-time-string "<%Y-%m-%d %a>" new-time))
-              (last-week-id (reomacs/dailies--week-id last-time))
-              (new-week-id (reomacs/dailies--week-id new-time))
-              ;; Find where to insert (end of last date subtree, not end of file)
-              (insert-pos (save-excursion
-                            (goto-char last-date-pos)
-                            (org-end-of-subtree t)
-                            (point))))
-        ;; Go to insert position
+      (let* ((parts (mapcar #'string-to-number
+                            (split-string last-date-str "-")))
+             (last-time (encode-time 0 0 0
+                                     (nth 2 parts) (nth 1 parts) (nth 0 parts)))
+             (new-time (if (time-less-p last-time today-time)
+                           today-time
+                         (reomacs/dailies--next-workday last-time)))
+             (new-date-str (format-time-string "<%Y-%m-%d %a>" new-time))
+             (last-week-id (reomacs/dailies--week-id last-time))
+             (new-week-id (reomacs/dailies--week-id new-time))
+             (insert-pos (save-excursion
+                           (goto-char last-date-pos)
+                           (org-end-of-subtree t)
+                           (point))))
         (goto-char insert-pos)
         (skip-chars-backward " \t\n")
         (end-of-line)
-        ;; Insert new entry
         (insert "\n\n")
-        (when (and reomacs/dailies-daily-target-hours
-                   (not (equal last-week-id new-week-id)))
+        (unless (equal last-week-id new-week-id)
           (insert "* Week " new-week-id "\n\n"))
-        (insert "** ")
-        (when reomacs/dailies-daily-target-hours
-          (insert (or (car org-not-done-keywords) "TODO") " "))
-        (insert new-date-str "\n\n")
-        (if reomacs/dailies-flat-layout
-            (insert "+ ")
-          (insert "*** " (reomacs/dailies--yesterday-label last-time new-time) "\n")
-          (when last-today-content
-            (insert last-today-content "\n"))
-          (insert "\n*** Today\n\n+ "))
+        (insert "** " (or (car org-not-done-keywords) "TODO")
+                " " new-date-str "\n\n+ ")
         (reomacs/dailies-refresh-week-status)
         (switch-to-buffer dailies-buf)
         (message "Created new daily entry for %s" new-date-str)))))
@@ -176,20 +124,15 @@ Skips weekends. Could be extended for holidays."
       (setq dow (string-to-number (format-time-string "%u" next-time))))
     next-time))
 
-(defun reomacs/dailies--yesterday-label (last-time new-time)
-  "Determine the label for the previous-day section.
-LAST-TIME and NEW-TIME are Emacs time values.
-Return `Yesterday', a weekday name, or a `Last ...' label."
-  (-let* ((diff-days (/ (float-time (time-subtract new-time last-time)) 86400))
-          (last-dow (format-time-string "%A" last-time))
-          (last-dow-num (string-to-number (format-time-string "%u" last-time)))
-          (new-dow-num (string-to-number (format-time-string "%u" new-time))))
-    (cond
-     ((< diff-days 2) "Yesterday")
-     ((< diff-days 4) last-dow)     ; Within a few days, use weekday name
-     ((= last-dow-num new-dow-num) (format "Last %s" last-dow))  ; Same weekday (e.g., Thu->Tue after holiday)
-     ((< diff-days 8) "Last Week")
-     (t (format "Last %s" last-dow)))))
+
+(defun reomacs/dailies--string-alist-p (value)
+  "Return non-nil when VALUE is an alist with string keys and values."
+  (and (proper-list-p value)
+       (seq-every-p (lambda (entry)
+                      (and (consp entry)
+                           (stringp (car entry))
+                           (stringp (cdr entry))))
+                    value)))
 
 (defcustom reomacs/dailies-repo-aliases '()
   "Alist mapping repo identities to display names for dailies.
@@ -200,7 +143,7 @@ resolve against each other.  Set as a file-local variable in
 dailies.org."
   :type '(alist :key-type string :value-type string)
   :group 'reo101
-  :safe #'listp)
+  :safe #'reomacs/dailies--string-alist-p)
 
 (defcustom reomacs/dailies-forge 'github
   "Git forge the interactions fetchers query.
@@ -208,7 +151,7 @@ Set as a file-local variable in dailies.org to vary per workspace."
   :type '(choice (const :tag "GitHub (gh CLI)" github)
                  (const :tag "Azure DevOps (az CLI)" azure))
   :group 'reo101
-  :safe #'symbolp)
+  :safe (lambda (value) (memq value '(github azure))))
 
 (defcustom reomacs/dailies-azure-org "https://dev.azure.com/baringa"
   "Azure DevOps organization URL, used when `reomacs/dailies-forge' is azure.
@@ -217,99 +160,51 @@ Set as a file-local variable in dailies.org if you deal with several orgs."
   :group 'reo101
   :safe #'stringp)
 
-(defcustom reomacs/dailies-event-handlers
-  '((pr-create    . reomacs/dailies--format-pr-create)
-    (pr-close     . reomacs/dailies--format-pr-close)
-    (pr-merge     . reomacs/dailies--format-pr-merge)
-    (pr-review    . reomacs/dailies--format-pr-review)
-    (issue-create . reomacs/dailies--format-issue-create)
-    (push-with-pr . reomacs/dailies--format-push-with-pr)
-    (push-no-pr   . reomacs/dailies--format-push-no-pr))
-  "Alist mapping event types to formatter functions.
-Each function receives a plist with event-specific keys:
-:url, :display-name, :number, :branch, :actor (where applicable).
-Should return an org-formatted string starting with \"+ \"."
-  :type '(alist :key-type symbol :value-type function)
-  :group 'reo101
-  :safe #'listp)
-
 (defun reomacs/dailies--format-event (event-type props)
-  "Format EVENT-TYPE using handler from `reomacs/dailies-gh-event-handlers'.
-PROPS is a plist with event-specific data."
-  (-if-let (handler (alist-get event-type reomacs/dailies-event-handlers))
-      (funcall handler props)
-    (format "+ [Unknown event: %s]" event-type)))
-
-;; Default formatters
-(defun reomacs/dailies--format-pr-create (props)
-  (format "+ Create [[%s][~%s~ PR %s]]"
-          (plist-get props :url)
-          (plist-get props :display-name)
-          (plist-get props :number)))
-
-(defun reomacs/dailies--format-pr-close (props)
-  (-let [actor (plist-get props :actor)]
-    (if actor
-        (format "+ Close [[%s][~%s~ PR %s]] (by @%s)"
-                (plist-get props :url)
-                (plist-get props :display-name)
-                (plist-get props :number)
-                actor)
-      (format "+ Close [[%s][~%s~ PR %s]]"
-              (plist-get props :url)
-              (plist-get props :display-name)
-              (plist-get props :number)))))
-
-(defun reomacs/dailies--format-pr-merge (props)
-  (-let [actor (plist-get props :actor)]
-    (if actor
-        (format "+ Merge [[%s][~%s~ PR %s]] (by @%s)"
-                (plist-get props :url)
-                (plist-get props :display-name)
-                (plist-get props :number)
-                actor)
-      (format "+ Merge [[%s][~%s~ PR %s]]"
-              (plist-get props :url)
-              (plist-get props :display-name)
-              (plist-get props :number)))))
-
-(defun reomacs/dailies--format-pr-review (props)
-  (format "+ Review [[%s][~%s~ PR %s]]"
-          (plist-get props :url)
-          (plist-get props :display-name)
-          (plist-get props :number)))
-
-(defun reomacs/dailies--format-issue-create (props)
-  (format "+ Create [[%s][~%s~ Issue %s]]"
-          (plist-get props :url)
-          (plist-get props :display-name)
-          (plist-get props :number)))
-
-(defun reomacs/dailies--format-push-with-pr (props)
-  (format "+ Push to ~%s~ branch ~%s~ ([[%s][PR %s]])"
-          (plist-get props :display-name)
-          (plist-get props :branch)
-          (plist-get props :url)
-          (plist-get props :number)))
-
-(defun reomacs/dailies--format-push-no-pr (props)
-  (format "+ Push to ~%s~ branch ~%s~"
-          (plist-get props :display-name)
-          (plist-get props :branch)))
+  "Format an Org line for EVENT-TYPE using PROPS."
+  (let ((url (plist-get props :url))
+        (name (plist-get props :display-name))
+        (number (plist-get props :number))
+        (branch (plist-get props :branch))
+        (actor (plist-get props :actor)))
+    (pcase event-type
+      ('pr-create
+       (format "+ Create [[%s][~%s~ PR %s]]" url name number))
+      ((or 'pr-close 'pr-merge)
+       (format "+ %s [[%s][~%s~ PR %s]]%s"
+               (if (eq event-type 'pr-merge) "Merge" "Close")
+               url name number
+               (if actor (format " (by @%s)" actor) "")))
+      ('pr-review
+       (format "+ Review [[%s][~%s~ PR %s]]" url name number))
+      ('issue-create
+       (format "+ Create [[%s][~%s~ Issue %s]]" url name number))
+      ('push-with-pr
+       (format "+ Push to ~%s~ branch ~%s~ ([[%s][PR %s]])"
+               name branch url number))
+      ('push-no-pr
+       (format "+ Push to ~%s~ branch ~%s~" name branch))
+      (_ (error "Unknown dailies event: %s" event-type)))))
 
 (defun reomacs/dailies--canonical-repo-id (repo-id)
-  "Canonicalize REPO-ID to its slash-separated path under the forge host.
-Strips schemes, credentials, hostnames and Azure's \"_git\" segments,
-so \"https://user@dev.azure.com/org/project/_git/repo\",
-\"git@github.com:owner/repo.git\" and bare path ids all resolve against
-alias keys written in any of those shapes.  Cosmetic limitation: repo
-names containing dots are truncated at the dot."
-  (let* ((no-scheme (replace-regexp-in-string "\\`[a-zA-Z][a-zA-Z0-9+.-]*://" "" repo-id))
-         (no-suffix (replace-regexp-in-string "\\.git\\'" "" no-scheme))
-         (parts (split-string no-suffix "[/:@ \t]+" t)))
-    (-when-let (host-idx (--find-index (string-match-p "\\." it) parts))
-      (setq parts (nthcdr (1+ host-idx) parts)))
-    (string-join (--filter (not (equal it "_git")) parts) "/")))
+  "Canonicalize URL, SSH remote, or bare REPO-ID to its forge path."
+  (let* ((value (replace-regexp-in-string "[?#].*\\'" "" (string-trim repo-id)))
+         (path
+          (cond
+           ((string-match
+             "\\`[[:alpha:]][[:alnum:]+.-]*://[^/]+/\\(.*\\)\\'" value)
+            (match-string 1 value))
+           ((string-match "\\`[^@/]+@[^:]+:\\(.*\\)\\'" value)
+            (match-string 1 value))
+           ((string-match
+             "\\`\\(?:github\\.com\\|dev\\.azure\\.com\\)/\\(.*\\)\\'"
+             value)
+            (match-string 1 value))
+           (t value)))
+         (path (replace-regexp-in-string "\\.git\\'" "" path))
+         (parts (split-string path "/" t)))
+    (string-join (seq-remove (lambda (part) (string= part "_git")) parts)
+                 "/")))
 
 (defun reomacs/dailies--repo-display-name (aliases repo-id repo-name)
   "Get display name for REPO-ID from ALIASES, falling back to REPO-NAME.
@@ -340,20 +235,8 @@ ISO-DATE is a timestamp; TARGET-DATE has the form YYYY-MM-DD."
   (or (alist-get reomacs/dailies-forge reomacs/dailies--username-commands)
       (user-error "Unknown dailies forge: %s" reomacs/dailies-forge)))
 
-(defun reomacs/dailies--fetch-username ()
-  "Get the current user's login for the active forge."
-  (string-trim
-   (shell-command-to-string
-    (mapconcat #'shell-quote-argument (reomacs/dailies--username-command) " "))))
 
-;; Runner abstraction for sync/async unification
-;; A runner is a plist with:
-;;   :fetch (cmd callback) - execute CMD, call CALLBACK with output
-;;   :emit (line) - output a result line
-;;   :spawn () - register a pending sub-request
-;;   :finish () - mark a sub-request complete
-;;   :date - target date string
-;;   :username - GitHub username
+;; A runner captures asynchronous fetch state and buffer-local settings.
 
 (defun reomacs/dailies--run-gh-fetch (runner)
   "Execute GitHub interactions fetch using RUNNER abstraction."
@@ -482,8 +365,8 @@ ISO-DATE is a timestamp; TARGET-DATE has the form YYYY-MM-DD."
 ;; ----------------------------------------------------------------------
 
 (defun reomacs/dailies--az-org-name (org)
-  "Org segment of Azure DevOps ORG url (e.g. \"baringa\")."
-  (-last-item (split-string org "/")))
+  "Return the organization segment of Azure DevOps URL ORG."
+  (car (last (split-string (string-trim-right org "/") "/" t))))
 
 (defun reomacs/dailies--az-pr-browser-url (org pr)
   "Browser-facing URL for Azure DevOps PR alist PR in ORG."
@@ -637,41 +520,6 @@ Each function receives the runner plist.")
       (funcall fetcher runner)
     (user-error "Unknown dailies forge: %s" (plist-get runner :forge))))
 
-(defun reomacs/dailies--make-sync-runner (date)
-  "Create a sync runner for DATE.
-Returns a plist with runner functions and a results cell.
-Buffer-local settings (`reomacs/dailies-forge', aliases, org URL) are
-captured here, while the command still runs inside the dailies buffer."
-  (-let* ((results (list nil))  ; cons cell to accumulate results
-          (username (reomacs/dailies--fetch-username)))
-    (list :date date
-          :forge reomacs/dailies-forge
-          :aliases reomacs/dailies-repo-aliases
-          :azure-org reomacs/dailies-azure-org
-          :username username
-          :results results
-          :fetch (lambda (cmd callback)
-                   (--> (if (listp cmd)
-                            (mapconcat #'shell-quote-argument cmd " ")
-                          cmd)
-                        (concat it " 2>/dev/null")
-                        (shell-command-to-string it)
-                        (funcall callback it)))
-          :emit (lambda (line) (push line (car results)))
-          :spawn #'ignore
-          :finish #'ignore)))
-
-(defun reomacs/dailies--fetch-interactions (date)
-  "Fetch forge PR/issue interactions for DATE.
-DATE should be a string like \"2025-01-26\".
-Returns a list of org-formatted \"+ \" lines."
-  (-let [runner (reomacs/dailies--make-sync-runner date)]
-    (reomacs/dailies--run-forge-fetch runner)
-    (->> (plist-get runner :results)
-         car
-         delete-dups
-         nreverse)))
-
 (defun reomacs/dailies--gh-async (command callback)
   "Run gh COMMAND asynchronously, call CALLBACK with output string.
 COMMAND can be a string (split by shell rules) or a list of args.
@@ -772,40 +620,10 @@ Skips weekends going backwards."
 
 ;;;###autoload
 (defun reomacs/dailies-insert-interactions (days-back)
-  "Insert git forge interactions for a date into the dailies buffer.
-Queries the forge configured by `reomacs/dailies-forge'.
-DAYS-BACK of nil uses the smart previous workday
-based on the current ** heading date. 0 means today. Positive numbers
-go that many days into the past from today."
-  (interactive
-   (list (let ((input (read-string "Days back (empty for smart yesterday, 0 for today): ")))
-           (if (string-empty-p input) nil (string-to-number input)))))
-  (-let* ((target-date
-           (cond
-            ((null days-back)
-             (-if-let (heading-time (reomacs/dailies--heading-date))
-                 (format-time-string "%Y-%m-%d"
-                                     (reomacs/dailies--previous-workday heading-time))
-               (user-error "No date heading found above point")))
-            (t
-             (format-time-string "%Y-%m-%d"
-                                 (time-subtract (current-time)
-                                                (* days-back 24 60 60))))))
-          (interactions (reomacs/dailies--fetch-interactions target-date)))
-    (if interactions
-        (progn
-          (insert (string-join interactions "\n"))
-          (message "Inserted %d interactions for %s" (length interactions) target-date))
-      (message "No %s interactions found for %s"
-               reomacs/dailies-forge target-date))))
-
-;;;###autoload
-(defun reomacs/dailies-insert-interactions-async (days-back)
   "Insert git forge interactions asynchronously.
-Queries the forge configured by `reomacs/dailies-forge'.
-Like `reomacs/dailies-insert-interactions' but non-blocking.
-Inserts a placeholder that gets replaced when results arrive.
-DAYS-BACK of nil (no input) uses smart yesterday, 0 means today."
+Queries the forge configured by `reomacs/dailies-forge' and replaces a
+placeholder as results arrive.  DAYS-BACK nil uses the previous
+workday, while zero uses today."
   (interactive
    (list (let ((input (read-string "Days back (empty for smart yesterday, 0 for today): ")))
            (if (string-empty-p input) nil (string-to-number input)))))
@@ -836,8 +654,11 @@ DAYS-BACK of nil (no input) uses smart yesterday, 0 means today."
           "\\(?:\\([0-9]+\\)m\\)?\\s-*"
           "\\(?:@\\([0-9]\\{1,2\\}:[0-9]\\{2\\}\\)\\)?\\s-*"
           "\\(✓\\)?}")
-  "Matches {1.5h}, {45m}, {2h30}, {2h30m}, optional @HH:MM and ✓ flag.
-Groups: 1 hours, 2 minutes, 3 start time, 4 submitted-flag.")
+  "Match a dailies duration, with capture groups for hours and minutes.")
+
+(defconst reomacs/dailies--trailing-duration-re
+  (concat "[ \\t]+" reomacs/dailies--duration-re "[ \\t]*\\'")
+  "Match a dailies duration annotation at the end of a line.")
 
 (defun reomacs/dailies--parse-duration (hours minutes)
   "Convert HOURS/MINUTES match groups (strings or nil) to whole minutes."
@@ -854,8 +675,7 @@ Submitted markers still count toward logged work."
         (let ((line (buffer-substring-no-properties
                      (line-beginning-position) (line-end-position))))
           (when (and (string-match "^[ \t]*\\+[ \t]+" line)
-                     (string-match reomacs/dailies--duration-re line)
-                     (string-blank-p (substring line (match-end 0))))
+                     (string-match reomacs/dailies--trailing-duration-re line))
             (setq total
                   (+ total
                      (reomacs/dailies--parse-duration
@@ -961,13 +781,9 @@ COMPLETE controls the checkmark independently of the hour count."
 
 (defun reomacs/dailies--configure-week-status ()
   "Configure dynamic week/day status after file-local variables load."
-  ;; Remove hooks used by earlier persisted/synchronous implementations.
-  (remove-hook 'before-save-hook #'reomacs/dailies-refresh-week-status t)
-  (remove-hook 'after-change-functions
-               #'reomacs/dailies-refresh-week-status t)
   (if (and reomacs/dailies-daily-target-hours
            (derived-mode-p 'org-mode)
-           (funcall reomacs/dailies-buffer-predicate (current-buffer)))
+           (reomacs/dailies--buffer-p))
       (progn
         (add-hook 'after-change-functions
                   #'reomacs/dailies--mark-hours-status-dirty nil t)
@@ -978,7 +794,8 @@ COMPLETE controls the checkmark independently of the hour count."
                  #'reomacs/dailies--mark-hours-status-dirty t)
     (remove-hook 'post-command-hook
                  #'reomacs/dailies--refresh-hours-status-if-dirty t)
-    (reomacs/dailies-refresh-week-status)))
+    (mapc #'delete-overlay reomacs/dailies--week-status-overlays)
+    (setq reomacs/dailies--week-status-overlays nil)))
 
 (add-hook 'hack-local-variables-hook #'reomacs/dailies--configure-week-status)
 
@@ -1006,10 +823,7 @@ By default, remove trailing duration annotations such as {2h} and
                   (insert content)
                   (goto-char (point-min))
                   (while (re-search-forward
-                          (concat "[ \t]+"
-                                  reomacs/dailies--duration-re
-                                  "[ \t]*$")
-                          nil t)
+                          reomacs/dailies--trailing-duration-re nil t)
                     (replace-match ""))
                   (buffer-string))))
         (let ((markdown
