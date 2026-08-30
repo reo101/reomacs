@@ -3722,57 +3722,50 @@ do not abort the remaining rows."
         (message "Timesheet submit: %d ok, %d failed" ok failed))))
 
   ;;;###autoload
-  (defun reomacs/org-heading-to-markdown-clipboard (&optional target-level md-level-offset)
-    "Export children of ancestor heading to markdown in kill-ring.
-  TARGET-LEVEL: which ancestor level to export from (default 2).
-  MD-LEVEL-OFFSET: adjust output heading levels (default 0).
-  With C-u, prompts for target level. With C-u C-u, prompts for both."
-    (interactive (cond
-                  ((equal current-prefix-arg '(16)) ; C-u C-u
-                   (list (read-number "Target heading level: " 2)
-                         (read-number "Markdown level offset: " 0)))
-                  ((equal current-prefix-arg '(4))  ; C-u
-                   (list (read-number "Target heading level: " 2) 0))
-                  (t (list 2 0))))
+  (defun reomacs/dailies-day-to-markdown-clipboard (&optional keep-durations)
+    "Copy the containing dailies date's entries as Markdown bullets.
+By default, remove trailing duration annotations such as {2h} and
+{45m @13:00}.  With prefix argument KEEP-DURATIONS, retain them."
+    (interactive "P")
     (require 'ox-md)
+    (unless (derived-mode-p 'org-mode)
+      (user-error "This command requires an Org buffer"))
     (save-excursion
-      ;; Navigate to the target-level ancestor
-      (org-back-to-heading t)
-      (while (> (org-current-level) target-level)
-        (org-up-heading-safe))
-      (-let* ((parent-level (org-current-level))
-              (parent-heading (org-get-heading t t t t))
-              (subtree-content
-               (save-restriction
-                 (org-narrow-to-subtree)
-                 (goto-char (point-min))
-                 (forward-line 1) ; skip parent heading
-                 (buffer-substring-no-properties (point) (point-max)))))
-        (-as-> subtree-content it
-               ;; Export to markdown with no TOC
-               (let ((org-export-with-toc nil)
-                     (org-export-with-section-numbers nil)
-                     (org-export-with-timestamps nil)
-                     (org-export-with-broken-links t)
-                     (org-md-headline-style 'atx))
-                 (org-export-string-as it 'md t))
-               ;; Clean up anchor tags
-               (replace-regexp-in-string "<a id=\"[^\"]+\"></a>\n?" "" it)
-               ;; Adjust heading levels to match org depth + offset
-               (replace-regexp-in-string
-                "^\\(#+\\) "
-                (lambda (match)
-                  (let* ((current-md-level (1- (length match)))
-                         (new-level (max 1 (+ current-md-level parent-level md-level-offset))))
-                    (concat (make-string new-level ?#) " ")))
-                it)
-               ;; Collapse multiple blank lines to single
-               (replace-regexp-in-string "\n\\{3,\\}" "\n\n" it)
-               ;; Trim leading/trailing whitespace
-               (string-trim it)
-               (kill-new it))
-        (message "Exported children of \"%s\" (level %d, offset %+d) to markdown"
-                 parent-heading parent-level md-level-offset))))
+      (let ((date (reomacs/dailies--goto-containing-date-heading)))
+        (unless date
+          (user-error "Point is not inside a dailies date heading"))
+        (let* ((beg (line-beginning-position 2))
+               (end (save-excursion
+                      (org-end-of-subtree t)
+                      (point)))
+               (content (buffer-substring-no-properties beg end)))
+          (unless keep-durations
+            (setq content
+                  (with-temp-buffer
+                    (insert content)
+                    (goto-char (point-min))
+                    (while (re-search-forward
+                            (concat "[ \t]+"
+                                    reomacs/dailies--duration-re
+                                    "[ \t]*$")
+                            nil t)
+                      (replace-match ""))
+                    (buffer-string))))
+          (let ((markdown
+                 (org-export-string-as
+                  content 'md t
+                  '(:with-toc nil :section-numbers nil
+                    :with-timestamps nil :with-broken-links t))))
+            (setq markdown
+                  (string-trim
+                   (replace-regexp-in-string
+                    "^\\([ \t]*[-+*]\\)[ \t]+" "\\1 "
+                    (replace-regexp-in-string "\n\\{3,\\}" "\n\n" markdown))))
+            (kill-new markdown)
+            (message "Copied %s as Markdown%s"
+                     date
+                     (if keep-durations " with durations" "")))))))
+
 #+end_src
 
 ** Tex
