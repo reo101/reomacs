@@ -32,6 +32,32 @@
                 (point-min) (point-max))
                375))))
 
+(ert-deftest reomacs-dailies-conceals-and-reveals-task-durations ()
+  (reomacs-dailies-test--with-org
+      (concat "+ One {2h}\n"
+              "+ Two {45m @13:00}\n"
+              "+ Three {1.5h✓}\n"
+              "Not a task {9h}\n")
+    (set-buffer-modified-p nil)
+    (reomacs/dailies-refresh-week-status)
+    (should (equal
+             (mapcar (lambda (overlay)
+                       (substring-no-properties (overlay-get overlay 'display)))
+                     reomacs/dailies--duration-overlays)
+             '(" 󰔛 2h " " 󰔛 45m · 13:00 " " 󰔛 1.5h ✓ ")))
+    (let ((overlay (cadr reomacs/dailies--duration-overlays)))
+      (goto-char (overlay-start overlay))
+      (reomacs/dailies--reveal-duration-at-point)
+      (should-not (overlay-get overlay 'display))
+      (should (equal (buffer-substring-no-properties
+                      (overlay-start overlay) (overlay-end overlay))
+                     "{45m @13:00}"))
+      (goto-char (point-min))
+      (reomacs/dailies--reveal-duration-at-point)
+      (should (equal (substring-no-properties (overlay-get overlay 'display))
+                     " 󰔛 45m · 13:00 ")))
+    (should-not (buffer-modified-p))))
+
 (ert-deftest reomacs-dailies-canonicalizes-repository-identities ()
   (dolist (case '(("owner/repo.with.dot" . "owner/repo.with.dot")
                   ("git@github.com:owner/repo.git" . "owner/repo")

@@ -873,8 +873,93 @@ Submitted markers still count toward logged work."
   "Face for the target portion of dynamic hours status displays."
   :group 'reo101)
 
+(defface reomacs/dailies-duration-face
+  '((t (:inherit org-tag :height 0.9 :weight semi-bold
+                 :box (:line-width (1 . -1)))))
+  "Face for concealed task duration chips."
+  :group 'reo101)
+
 (defvar-local reomacs/dailies--week-status-overlays nil
   "Dynamic week/day status overlays in the current dailies buffer.")
+
+(defvar-local reomacs/dailies--duration-overlays nil
+  "Concealed task duration overlays in the current dailies buffer.")
+
+(defvar-local reomacs/dailies--revealed-duration-overlay nil
+  "Duration overlay currently revealed for editing.")
+
+(defun reomacs/dailies--duration-chip (hours minutes start complete)
+  "Return a pretty duration chip for HOURS, MINUTES, START and COMPLETE."
+  (let ((text (string-join
+               (delq nil (list (and hours (concat hours "h"))
+                               (and minutes (concat minutes "m"))))
+               " ")))
+    (when start
+      (setq text (concat text (unless (string-empty-p text) " · ") start)))
+    (when complete
+      (setq text (concat text (unless (string-empty-p text) " ") "✓")))
+    (propertize (format " 󰔛 %s " text)
+                'face 'reomacs/dailies-duration-face)))
+
+(defun reomacs/dailies--duration-overlay-at-point ()
+  "Return the concealed duration overlay containing point, if any."
+  (seq-find (lambda (overlay)
+              (and (overlay-buffer overlay)
+                   (<= (overlay-start overlay) (point))
+                   (< (point) (overlay-end overlay))))
+            reomacs/dailies--duration-overlays))
+
+(defun reomacs/dailies--reveal-duration-at-point ()
+  "Reveal the duration source under point and conceal the previous one."
+  (let ((current (reomacs/dailies--duration-overlay-at-point)))
+    (unless (eq current reomacs/dailies--revealed-duration-overlay)
+      (when (and reomacs/dailies--revealed-duration-overlay
+                 (overlay-buffer reomacs/dailies--revealed-duration-overlay))
+        (overlay-put
+         reomacs/dailies--revealed-duration-overlay 'display
+         (overlay-get reomacs/dailies--revealed-duration-overlay
+                      'reomacs/dailies-duration-display)))
+      (setq reomacs/dailies--revealed-duration-overlay current)
+      (when current
+        (overlay-put current 'display nil)))))
+
+(defun reomacs/dailies--refresh-duration-overlays ()
+  "Rebuild concealed duration chips for task bullets."
+  (mapc #'delete-overlay reomacs/dailies--duration-overlays)
+  (setq reomacs/dailies--duration-overlays nil
+        reomacs/dailies--revealed-duration-overlay nil)
+  (save-restriction
+    (widen)
+    (save-excursion
+      (goto-char (point-min))
+      (while (re-search-forward reomacs/dailies--trailing-duration-re nil t)
+        (let ((beg (save-excursion
+                     (goto-char (match-beginning 0))
+                     (skip-chars-forward " \t" (match-end 0))
+                     (point)))
+              (end (match-end 0))
+              (hours (match-string-no-properties 1))
+              (minutes (match-string-no-properties 2))
+              (start (match-string-no-properties 3))
+              (complete (match-string-no-properties 4))
+              (source (string-trim
+                       (match-string-no-properties 0))))
+          (when (save-excursion
+                  (goto-char beg)
+                  (beginning-of-line)
+                  (looking-at-p "[ \t]*\\+[ \t]+"))
+            (let* ((display (reomacs/dailies--duration-chip
+                             hours minutes start complete))
+                   (overlay (make-overlay beg end)))
+              (overlay-put overlay 'display display)
+              (overlay-put overlay 'reomacs/dailies-duration-display display)
+              (overlay-put overlay 'help-echo
+                           (format "%s; move point here to edit" source))
+              (overlay-put overlay 'evaporate t)
+              (push overlay reomacs/dailies--duration-overlays)))))))
+  (setq reomacs/dailies--duration-overlays
+        (nreverse reomacs/dailies--duration-overlays))
+  (reomacs/dailies--reveal-duration-at-point))
 
 (defvar-local reomacs/dailies--hours-status-dirty nil
   "Non-nil when hour overlays need refreshing after the current command.")
@@ -884,9 +969,10 @@ Submitted markers still count toward logged work."
   (setq reomacs/dailies--hours-status-dirty t))
 
 (defun reomacs/dailies--refresh-hours-status-if-dirty ()
-  "Refresh dynamic hour displays after the editing command finishes."
+  "Refresh stale hour displays and reveal the duration under point."
   (when reomacs/dailies--hours-status-dirty
-    (reomacs/dailies-refresh-week-status)))
+    (reomacs/dailies-refresh-week-status))
+  (reomacs/dailies--reveal-duration-at-point))
 
 (defun reomacs/dailies--add-hours-status-overlay
     (position minutes target-minutes label complete)
@@ -911,9 +997,10 @@ COMPLETE controls the checkmark independently of the hour count."
 
 ;;;###autoload
 (defun reomacs/dailies-refresh-week-status (&rest _)
-  "Refresh dynamic hours displayed after week and date headings."
+  "Refresh task duration chips and hours after week and date headings."
   (interactive)
   (setq reomacs/dailies--hours-status-dirty nil)
+  (reomacs/dailies--refresh-duration-overlays)
   (mapc #'delete-overlay reomacs/dailies--week-status-overlays)
   (setq reomacs/dailies--week-status-overlays nil)
   (when reomacs/dailies-daily-target-hours
@@ -961,9 +1048,8 @@ COMPLETE controls the checkmark independently of the hour count."
                        "" "s")))))))
 
 (defun reomacs/dailies--configure-week-status ()
-  "Configure dynamic week/day status after file-local variables load."
-  (if (and reomacs/dailies-daily-target-hours
-           (derived-mode-p 'org-mode)
+  "Configure duration chips and week/day status after local variables load."
+  (if (and (derived-mode-p 'org-mode)
            (reomacs/dailies--buffer-p))
       (progn
         (add-hook 'after-change-functions
@@ -976,7 +1062,10 @@ COMPLETE controls the checkmark independently of the hour count."
     (remove-hook 'post-command-hook
                  #'reomacs/dailies--refresh-hours-status-if-dirty t)
     (mapc #'delete-overlay reomacs/dailies--week-status-overlays)
-    (setq reomacs/dailies--week-status-overlays nil)))
+    (mapc #'delete-overlay reomacs/dailies--duration-overlays)
+    (setq reomacs/dailies--week-status-overlays nil
+          reomacs/dailies--duration-overlays nil
+          reomacs/dailies--revealed-duration-overlay nil)))
 
 (add-hook 'hack-local-variables-hook #'reomacs/dailies--configure-week-status)
 
