@@ -6,5 +6,7 @@
 !README.org
 !lisp/
 !lisp/reomacs-treesit-rainbow.el
+!lisp/reomacs-dailies.el
 !test/
 !test/reomacs-treesit-rainbow-test.el
+!test/reomacs-dailies-test.el
