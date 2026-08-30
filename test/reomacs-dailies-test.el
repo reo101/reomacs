@@ -94,6 +94,7 @@
   (reomacs-dailies-test--with-org
       (concat "* Week 2026-W36\n"
               "** TODO <2026-08-31 Mon>\n"
+              "+ Meetings {30m}\n"
               "+ Review [[https://example.test/pr/1][PR 1]] using ~uom~ {2h}\n"
               "** TODO <2026-09-01 Tue>\n"
               "+ Wrong day {8h}\n")
@@ -107,9 +108,11 @@
                  (lambda (text &rest _) (setq with text))))
         (reomacs/dailies-day-to-markdown-clipboard t))
       (should (equal without
-                     "- Review [PR 1](https://example.test/pr/1) using `uom`"))
+                     (concat "- Meetings\n"
+                             "- Review [PR 1](https://example.test/pr/1) using `uom`")))
       (should (equal with
-                     "- Review [PR 1](https://example.test/pr/1) using `uom` {2h}"))
+                     (concat "- Meetings {30m}\n"
+                             "- Review [PR 1](https://example.test/pr/1) using `uom` {2h}")))
       (should-not (buffer-modified-p)))))
 
 (ert-deftest reomacs-dailies-resolves-the-exact-visiting-buffer ()
@@ -134,13 +137,114 @@
       (delete-directory left-dir t)
       (delete-directory right-dir t))))
 
+(ert-deftest reomacs-dailies-converts-forge-timestamps-to-local-days ()
+  (should (reomacs/dailies--date-on-day-p
+           "2026-08-30T22:30:00Z" "2026-08-31" "Europe/Sofia"))
+  (should-not (reomacs/dailies--date-on-day-p
+               "2026-08-31T22:30:00Z" "2026-08-31" "Europe/Sofia"))
+  (should (equal (reomacs/dailies--utc-search-range
+                  "2026-08-31" "Europe/Sofia")
+                 '("2026-08-30" "2026-08-31")))
+  (should (equal (reomacs/dailies--utc-search-range
+                  "2026-08-31" "UTC")
+                 '("2026-08-31" "2026-08-31")))
+  (should (equal (reomacs/dailies--date-add-days "2026-03-28" 2)
+                 "2026-03-30"))
+  (should-error (reomacs/dailies--date-add-days "2026-02-30" 1)))
+
+(ert-deftest reomacs-dailies-emits-both-same-day-pr-events ()
+  (let ((emitted nil)
+        (pr '((url . "https://example.test/pr/1")
+              (number . 1)
+              (createdAt . "2026-08-31T08:00:00Z")
+              (closedAt . "2026-08-31T16:00:00Z")
+              (repository . ((name . "repo")
+                             (nameWithOwner . "owner/repo"))))))
+    (reomacs/dailies--process-prs
+     (list :date "2026-08-31" :username "me" :aliases nil
+           :emit (lambda (line) (push line emitted))
+           :fetch (lambda (_command callback)
+                    (funcall callback
+                             "{\"actor\":\"me\",\"event\":\"merged\"}")))
+     (list pr))
+    (should (equal (nreverse emitted)
+                   '("+ Create [[https://example.test/pr/1][~repo~ PR 1]]"
+                     "+ Merge [[https://example.test/pr/1][~repo~ PR 1]]")))))
+
+(ert-deftest reomacs-dailies-github-fetches-are-bounded-and-paginated ()
+  (let (commands)
+    (cl-letf (((symbol-function 'reomacs/dailies--utc-search-range)
+               (lambda (&rest _) '("2026-08-30" "2026-08-31"))))
+      (reomacs/dailies--run-gh-fetch
+       (list :date "2026-08-31" :username "me" :aliases nil
+             :emit #'ignore
+             :fetch (lambda (command _callback) (push command commands)))))
+    (should (= (length commands) 4))
+    (dolist (command (seq-filter
+                      (lambda (command) (member "search" command)) commands))
+      (should (member "--limit=1000" command))
+      (should (member "--updated=2026-08-30..2026-08-31" command)))
+    (let ((events-command
+           (seq-find (lambda (command) (member "--slurp" command)) commands)))
+      (should (member "--paginate" events-command)))))
+
+(ert-deftest reomacs-dailies-paginates-azure-pull-requests ()
+  (let ((calls 0)
+        commands
+        (page (json-encode (make-list 500 '((pullRequestId . 1))))))
+    (cl-letf (((symbol-function 'reomacs/dailies--process-az-prs) #'ignore))
+      (reomacs/dailies--fetch-azure-pr-page
+       (list :azure-org "https://dev.azure.com/org"
+             :fetch (lambda (command callback)
+                      (push command commands)
+                      (setq calls (1+ calls))
+                      (funcall callback (if (= calls 1) page "[]"))))
+       "project" 0))
+    (should (= calls 2))
+    (should (member "500" (car commands)))))
+
+(defun reomacs-dailies-test--wait-for-process (process)
+  "Wait for PROCESS and its sentinel to finish."
+  (while (process-live-p process)
+    (accept-process-output process 0.1))
+  (accept-process-output nil 0.05))
+
+(ert-deftest reomacs-dailies-process-failure-finalizes-placeholder ()
+  (reomacs-dailies-test--with-org
+      (concat "+ " reomacs/dailies--placeholder "\n")
+    (let* ((marker (copy-marker (point-min) t))
+           (runner (reomacs/dailies--make-runner "2026-08-31" marker))
+           (process (funcall (plist-get runner :fetch)
+                             '("false") #'ignore)))
+      (reomacs-dailies-test--wait-for-process process)
+      (should (zerop (gethash :pending (plist-get runner :state))))
+      (should-not (marker-buffer marker))
+      (should (string-match-p
+               "^\\+ ERROR: github interactions, 1 request failed$"
+               (string-trim (buffer-string)))))))
+
+(ert-deftest reomacs-dailies-callback-failure-finalizes-placeholder ()
+  (reomacs-dailies-test--with-org
+      (concat "+ " reomacs/dailies--placeholder "\n")
+    (let* ((marker (copy-marker (point-min) t))
+           (runner (reomacs/dailies--make-runner "2026-08-31" marker))
+           (process
+            (funcall (plist-get runner :fetch) '("printf" "{")
+                     #'reomacs/dailies--json)))
+      (reomacs-dailies-test--wait-for-process process)
+      (should (zerop (gethash :pending (plist-get runner :state))))
+      (should-not (marker-buffer marker))
+      (should (string-match-p "^\\+ ERROR:" (buffer-string))))))
+
 (ert-deftest reomacs-dailies-has-no-obsolete-submission-or-layout-paths ()
   (dolist (symbol '(reomacs/dailies-submit-timesheet
                     reomacs/dailies--dv-request
                     reomacs/dailies--dataverse-token
                     reomacs/dailies-insert-interactions-async
-                    reomacs/dailies--fetch-interactions
+                    reomacs/dailies--fetch-interactions-async
                     reomacs/dailies--make-sync-runner
+                    reomacs/dailies--make-async-runner
+                    reomacs/dailies--gh-async
                     reomacs/dailies--yesterday-label))
     (should-not (fboundp symbol)))
   (dolist (symbol '(reomacs/dailies-flat-layout
