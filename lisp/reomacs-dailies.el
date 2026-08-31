@@ -963,17 +963,18 @@ References in later date entries come first."
    (lambda (item)
      (let* ((fields (alist-get 'fields item))
             (number (alist-get 'id item))
+            (item-project (or (alist-get 'System.TeamProject fields) project))
             (kind (or (alist-get 'System.WorkItemType fields) "Work item"))
             (title (reomacs/dailies--reference-title
                     (alist-get 'System.Title fields)))
             (url (format "%s/%s/_workitems/edit/%s"
-                         (string-trim-right org "/") project number))
+                         (string-trim-right org "/") item-project number))
             (description
              (reomacs/dailies--reference-description
-              project kind number title)))
+              item-project kind number title)))
        (list :url url
              :display (format "Azure ticket  %s %s %s  %s"
-                              project kind number title)
+                              item-project kind number title)
              :link (org-link-make-string url description)
              :updated (alist-get 'System.ChangedDate fields))))
    (reomacs/dailies--json output)))
@@ -1001,6 +1002,59 @@ References in later date entries come first."
                           (alist-get 'creationDate pr)))))
    (reomacs/dailies--json output)))
 
+(defconst reomacs/dailies--azure-linked-pr-limit 20
+  "Maximum participating PRs scanned for linked work-item references.")
+
+(defun reomacs/dailies--azure-pr-participant-p (pr username)
+  "Return non-nil when USERNAME created or reviews Azure PR."
+  (or (reomacs/dailies--identity-equal-p
+       username (alist-get 'uniqueName (alist-get 'createdBy pr)))
+      (seq-some
+       (lambda (reviewer)
+         (reomacs/dailies--identity-equal-p
+          username (alist-get 'uniqueName reviewer)))
+       (alist-get 'reviewers pr))))
+
+(defun reomacs/dailies--azure-linked-work-item-requests
+    (output org project username)
+  "Build work-item requests from participating PRs in OUTPUT.
+ORG and PROJECT identify the Azure source; USERNAME identifies participation."
+  (mapcar
+   (lambda (pr)
+     (list
+      :command
+      (list "az" "repos" "pr" "work-item" "list" "--org" org
+            "--id" (number-to-string (alist-get 'pullRequestId pr)) "-o" "json")
+      :parser
+      (lambda (work-output)
+        (reomacs/dailies--parse-azure-work-reference-candidates
+         work-output org project))))
+   (seq-take
+    (seq-filter
+     (lambda (pr)
+       (reomacs/dailies--azure-pr-participant-p pr username))
+     (reomacs/dailies--json output))
+    reomacs/dailies--azure-linked-pr-limit)))
+
+(defun reomacs/dailies--azure-pr-reference-request
+    (org project repository aliases username)
+  "Build an Azure PR request for ORG and PROJECT.
+Limit it to REPOSITORY, use ALIASES for display, and find links for USERNAME."
+  (list
+   :command
+   (append (list "az" "repos" "pr" "list" "--org" org
+                 "--project" project)
+           (when repository (list "--repository" repository))
+           (list "--status" "all" "--top" "100" "-o" "json"))
+   :parser
+   (lambda (output)
+     (reomacs/dailies--parse-azure-pr-reference-candidates
+      output org aliases))
+   :followups
+   (lambda (output)
+     (reomacs/dailies--azure-linked-work-item-requests
+      output org project username))))
+
 (defun reomacs/dailies--reference-requests (sources)
   "Return remote reference requests for SOURCES."
   (let (requests)
@@ -1027,6 +1081,7 @@ References in later date entries come first."
          (let* ((org reomacs/dailies-azure-org)
                 (project (plist-get source :project))
                 (repository (plist-get source :repository))
+                (aliases reomacs/dailies-repo-aliases)
                 (quoted-project (string-replace "'" "''" project))
                 (wiql
                  (concat
@@ -1034,8 +1089,8 @@ References in later date entries come first."
                   "[System.State], [System.ChangedDate] FROM WorkItems WHERE "
                   "[System.TeamProject] = '" quoted-project "' AND "
                   "[System.ChangedDate] >= @Today - 60 AND "
-                  "([System.AssignedTo] = @Me OR [System.CreatedBy] = @Me OR "
-                  "[System.ChangedBy] = @Me) "
+                  "(EVER [System.AssignedTo] = @Me OR "
+                  "[System.CreatedBy] = @Me OR EVER [System.ChangedBy] = @Me) "
                   "ORDER BY [System.ChangedDate] DESC")))
            (push
             (list
@@ -1049,16 +1104,16 @@ References in later date entries come first."
            (push
             (list
              :command
-             (append (list "az" "repos" "pr" "list" "--org" org
-                           "--project" project)
-                     (when repository
-                       (list "--repository" repository))
-                     (list "--status" "all" "--top" "100" "-o" "json"))
-             :parser
-             (let ((aliases reomacs/dailies-repo-aliases))
-               (lambda (output)
-                 (reomacs/dailies--parse-azure-pr-reference-candidates
-                  output org aliases))))
+             (copy-sequence
+              (alist-get 'azure reomacs/dailies--username-commands))
+             :followups
+             (lambda (output)
+               (let ((username (string-trim output)))
+                 (when (string-empty-p username)
+                   (error "Azure username command returned no value"))
+                 (list
+                  (reomacs/dailies--azure-pr-reference-request
+                   org project repository aliases username)))))
             requests)))
         (forge (error "Unknown dailies forge: %s" forge))))
     (nreverse requests)))
@@ -1103,31 +1158,45 @@ References in later date entries come first."
         (append (plist-get state :local) remote))))
     (run-at-time 0 nil #'reomacs/dailies--refresh-reference-minibuffer state)))
 
+(defun reomacs/dailies--start-reference-request (request state)
+  "Start one asynchronous REQUEST and stream its results into STATE."
+  (plist-put state :remaining (1+ (or (plist-get state :remaining) 0)))
+  (condition-case err
+      (let ((process
+             (reomacs/dailies--run-process
+              (plist-get request :command)
+              (lambda (output process-error)
+                (unless (plist-get state :closed)
+                  (if process-error
+                      (reomacs/dailies--finish-reference-request
+                       state nil process-error)
+                    (condition-case parse-error
+                        (let ((candidates
+                               (when-let* ((parser (plist-get request :parser)))
+                                 (funcall parser output)))
+                              (followups
+                               (when-let* ((builder
+                                            (plist-get request :followups)))
+                                 (funcall builder output))))
+                          (dolist (followup followups)
+                            (reomacs/dailies--start-reference-request
+                             followup state))
+                          (reomacs/dailies--finish-reference-request
+                           state candidates nil))
+                      (error
+                       (reomacs/dailies--finish-reference-request
+                        state nil (error-message-string parse-error))))))))))
+        (plist-put state :processes
+                   (cons process (plist-get state :processes))))
+    (error
+     (reomacs/dailies--finish-reference-request
+      state nil (error-message-string err)))))
+
 (defun reomacs/dailies--start-reference-fetch (requests state)
   "Start asynchronous REQUESTS and stream their results into STATE."
-  (plist-put state :remaining (length requests))
+  (plist-put state :remaining 0)
   (dolist (request requests)
-    (let ((request request))
-      (condition-case err
-          (plist-put
-           state :processes
-           (cons
-            (reomacs/dailies--run-process
-             (plist-get request :command)
-             (lambda (output process-error)
-               (if process-error
-                   (reomacs/dailies--finish-reference-request
-                    state nil process-error)
-                 (condition-case parse-error
-                     (reomacs/dailies--finish-reference-request
-                      state (funcall (plist-get request :parser) output) nil)
-                   (error
-                    (reomacs/dailies--finish-reference-request
-                     state nil (error-message-string parse-error)))))))
-            (plist-get state :processes)))
-        (error
-         (reomacs/dailies--finish-reference-request
-          state nil (error-message-string err)))))))
+    (reomacs/dailies--start-reference-request request state)))
 
 (defun reomacs/dailies--azure-reference-source (project)
   "Return an Azure reference source for PROJECT."
@@ -1274,7 +1343,8 @@ Without a prefix argument, query `reomacs/dailies-forge'.  With prefix
 argument PROMPT, choose the current forge, both forges, a custom Azure
 project, or GitHub.  Prompt for a repository, preselecting
 `reomacs/dailies-default-repository'.  Local references appear immediately;
-remote results stream into the active completion UI."
+remote results stream into the active completion UI.  Azure tickets include
+recent historical involvement and items linked to authored or reviewed PRs."
   (interactive "P")
   (unless (and (derived-mode-p 'org-mode)
                (reomacs/dailies--buffer-p))

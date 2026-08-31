@@ -221,6 +221,14 @@
              (updatedAt . "2026-08-31T11:00:00Z")
              (repository . ((name . "repo")
                             (nameWithOwner . "owner/repo"))))]))
+         (pr-output
+          (json-encode
+           [((pullRequestId . 17)
+             (createdBy . ((uniqueName . "me")))
+             (reviewers . []))
+            ((pullRequestId . 18)
+             (createdBy . ((uniqueName . "someone-else")))
+             (reviewers . []))]))
          (work
           (car (reomacs/dailies--parse-azure-work-reference-candidates
                 work-output reomacs/dailies-azure-org "plcs")))
@@ -246,16 +254,29 @@
              requests))
     (should (seq-some
              (lambda (request)
-               (member "--repository" (plist-get request :command)))
-             requests))
-    (should (seq-some
-             (lambda (request)
                (member "--repo=owner/repo" (plist-get request :command)))
              requests))
+    (let* ((username-request
+            (seq-find
+             (lambda (request)
+               (member "account" (plist-get request :command)))
+             requests))
+           (pr-request
+            (car (funcall (plist-get username-request :followups) "me\n")))
+           (linked-requests
+            (funcall (plist-get pr-request :followups) pr-output)))
+      (should (member "--repository" (plist-get pr-request :command)))
+      (should (= (length linked-requests) 1))
+      (should (equal (plist-get (car linked-requests) :command)
+                     '("az" "repos" "pr" "work-item" "list"
+                       "--org" "https://dev.azure.com/org"
+                       "--id" "17" "-o" "json"))))
     (should (seq-some
              (lambda (request)
                (seq-some (lambda (argument)
-                           (string-match-p "System.AssignedTo" argument))
+                           (and (stringp argument)
+                                (string-match-p
+                                 "EVER \\[System.AssignedTo\\]" argument)))
                          (plist-get request :command)))
              requests))))
 
@@ -309,6 +330,39 @@
     (should (zerop (plist-get state :remaining)))
     (should (equal (all-completions "" table)
                    '("Recent local" "Remote result")))))
+
+(ert-deftest reomacs-dailies-reference-fetch-runs-followups ()
+  (let ((state (list :local nil :remote nil :candidates nil
+                     :errors nil :remaining 0 :processes nil
+                     :minibuffer nil :closed nil))
+        callbacks)
+    (cl-letf (((symbol-function 'reomacs/dailies--run-process)
+               (lambda (command callback)
+                 (push (cons command callback) callbacks)
+                 (make-symbol "process")))
+              ((symbol-function 'run-at-time) #'ignore))
+      (reomacs/dailies--start-reference-fetch
+       (list
+        (list :command '("parent")
+              :parser (lambda (_)
+                        (list (list :url "parent" :display "Parent")))
+              :followups
+              (lambda (_)
+                (list
+                 (list :command '("child")
+                       :parser
+                       (lambda (_)
+                         (list (list :url "child" :display "Child"))))))))
+       state)
+      (should (= (plist-get state :remaining) 1))
+      (funcall (cdr (assoc '("parent") callbacks)) "parent" nil)
+      (should (= (plist-get state :remaining) 1))
+      (funcall (cdr (assoc '("child") callbacks)) "child" nil)
+      (should (zerop (plist-get state :remaining)))
+      (should (equal (mapcar (lambda (candidate)
+                              (plist-get candidate :display))
+                            (plist-get state :candidates))
+                     '("Child" "Parent"))))))
 
 (ert-deftest reomacs-dailies-reference-refreshes-vertico-in-place ()
   (with-temp-buffer
