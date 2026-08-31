@@ -5,8 +5,8 @@
 
 ;;; Commentary:
 
-;; Maintain flat Org work dailies, fetch forge interactions, display logged
-;; hours, and copy daily entries as Markdown.
+;; Maintain flat Org work dailies, fetch forge interactions, insert forge
+;; references, display logged hours, and copy daily entries as Markdown.
 
 ;;; Code:
 
@@ -14,6 +14,7 @@
 (require 'dash)
 (require 'json)
 (require 'org)
+(require 'org-element)
 (require 'seq)
 (require 'subr-x)
 
@@ -195,6 +196,12 @@ Set as a file-local variable in dailies.org if you deal with several orgs."
   :type 'string
   :group 'reo101
   :safe #'stringp)
+
+(defcustom reomacs/dailies-azure-project nil
+  "Azure DevOps project used for work-item and PR reference completion."
+  :type '(choice (const :tag "Unset" nil) string)
+  :group 'reo101
+  :safe (lambda (value) (and (stringp value) (not (string-blank-p value)))))
 
 (defun reomacs/dailies--format-event (event-type props)
   "Format an Org line for EVENT-TYPE using PROPS."
@@ -825,6 +832,332 @@ assigned PRs and PRs whose lifecycle changed on the requested date."
     (message "Fetching %s interactions for %s..."
              reomacs/dailies-forge target-date)
     (reomacs/dailies--fetch-interactions target-date marker)))
+
+;; ----------------------------------------------------------------------
+;; Forge reference picker
+
+(defvar reomacs/dailies-reference-history nil
+  "Minibuffer history for dailies forge references.")
+
+(defun reomacs/dailies--reference-title (value)
+  "Return VALUE as safe single-line Org link description text."
+  (string-replace
+   "]" ")"
+   (string-replace
+    "[" "("
+    (replace-regexp-in-string "[\n\r\t ]+" " " (string-trim (or value ""))))))
+
+(defun reomacs/dailies--reference-description (name kind number title)
+  "Format a reference to NAME's KIND NUMBER with TITLE."
+  (let ((title (reomacs/dailies--reference-title title)))
+    (format "~%s~ %s %s%s" name kind number
+            (if (string-empty-p title) "" (concat ": " title)))))
+
+(defun reomacs/dailies--reference-url-forge (url)
+  "Return the forge recognized from reference URL, or nil."
+  (let ((case-fold-search t))
+    (cond
+     ((string-match-p
+       "github\\.com/[^/]+/[^/]+/\\(?:issues\\|pull\\)/[0-9]+" url)
+      'github)
+     ((and (string-match-p "\\(?:dev\\.azure\\.com\\|visualstudio\\.com\\)" url)
+           (string-match-p
+            "\\(?:/pullrequest/[0-9]+\\|/_workitems/edit/[0-9]+\\)" url))
+      'azure))))
+
+(defun reomacs/dailies--recent-reference-candidates (sources)
+  "Return up to 30 local reference candidates matching SOURCES.
+References in later date entries come first."
+  (let ((forges (mapcar (lambda (source) (plist-get source :forge)) sources))
+        candidates)
+    (org-element-map (org-element-parse-buffer) 'link
+      (lambda (link)
+        (let* ((url (org-element-property :raw-link link))
+               (forge (and url (reomacs/dailies--reference-url-forge url)))
+               (position (org-element-property :begin link)))
+          (when (and forge (memq forge forges)
+                     (save-excursion
+                       (goto-char position)
+                       (reomacs/dailies--goto-containing-date-heading)))
+            (let* ((description
+                    (if-let* ((beg (org-element-property :contents-begin link))
+                              (end (org-element-property :contents-end link)))
+                        (buffer-substring-no-properties beg end)
+                      url))
+                   (description
+                    (reomacs/dailies--reference-title description)))
+              (push (list :url url
+                          :display (concat "Recent  " description)
+                          :link (org-link-make-string url description)
+                          :position position)
+                    candidates))))))
+    (seq-take
+     (sort candidates
+           (lambda (left right)
+             (> (plist-get left :position) (plist-get right :position))))
+     30)))
+
+(defun reomacs/dailies--parse-github-reference-candidates (output aliases)
+  "Parse GitHub reference candidates from OUTPUT using ALIASES."
+  (mapcar
+   (lambda (item)
+     (let* ((repository (alist-get 'repository item))
+            (repo-id (alist-get 'nameWithOwner repository))
+            (repo-name (alist-get 'name repository))
+            (name (reomacs/dailies--repo-display-name
+                   aliases repo-id repo-name))
+            (number (alist-get 'number item))
+            (kind (if (alist-get 'isPullRequest item) "PR" "Issue"))
+            (title (reomacs/dailies--reference-title
+                    (alist-get 'title item)))
+            (url (alist-get 'url item))
+            (description
+             (reomacs/dailies--reference-description
+              name kind number title)))
+       (list :url url
+             :display (format "GitHub %s  %s #%s  %s"
+                              kind repo-id number title)
+             :link (org-link-make-string url description)
+             :updated (alist-get 'updatedAt item))))
+   (reomacs/dailies--json output)))
+
+(defun reomacs/dailies--parse-azure-work-reference-candidates
+    (output org project)
+  "Parse Azure work-item candidates from OUTPUT for ORG and PROJECT."
+  (mapcar
+   (lambda (item)
+     (let* ((fields (alist-get 'fields item))
+            (number (alist-get 'id item))
+            (kind (or (alist-get 'System.WorkItemType fields) "Work item"))
+            (title (reomacs/dailies--reference-title
+                    (alist-get 'System.Title fields)))
+            (url (format "%s/%s/_workitems/edit/%s"
+                         (string-trim-right org "/") project number))
+            (description
+             (reomacs/dailies--reference-description
+              project kind number title)))
+       (list :url url
+             :display (format "Azure ticket  %s %s %s  %s"
+                              project kind number title)
+             :link (org-link-make-string url description)
+             :updated (alist-get 'System.ChangedDate fields))))
+   (reomacs/dailies--json output)))
+
+(defun reomacs/dailies--parse-azure-pr-reference-candidates
+    (output org aliases)
+  "Parse Azure PR candidates from OUTPUT for ORG using ALIASES."
+  (mapcar
+   (lambda (pr)
+     (let* ((repository (alist-get 'repository pr))
+            (name (reomacs/dailies--repo-display-name
+                   aliases (reomacs/dailies--az-repo-id org pr)
+                   (alist-get 'name repository)))
+            (number (alist-get 'pullRequestId pr))
+            (title (reomacs/dailies--reference-title
+                    (alist-get 'title pr)))
+            (url (reomacs/dailies--az-pr-browser-url org pr))
+            (description
+             (reomacs/dailies--reference-description
+              name "PR" number title)))
+       (list :url url
+             :display (format "Azure PR  %s #%s  %s" name number title)
+             :link (org-link-make-string url description)
+             :updated (or (alist-get 'closedDate pr)
+                          (alist-get 'creationDate pr)))))
+   (reomacs/dailies--json output)))
+
+(defun reomacs/dailies--reference-requests (sources)
+  "Return remote reference requests for SOURCES."
+  (let (requests)
+    (dolist (source sources)
+      (pcase (plist-get source :forge)
+        ('github
+         (push
+          (list
+           :command
+           (list "gh" "search" "issues" "--involves=@me" "--include-prs"
+                 "--sort=updated" "--order=desc" "--limit=100" "--json"
+                 (concat "number,repository,url,title,updatedAt,"
+                         "isPullRequest,state"))
+           :parser
+           (let ((aliases reomacs/dailies-repo-aliases))
+             (lambda (output)
+               (reomacs/dailies--parse-github-reference-candidates
+                output aliases))))
+          requests))
+        ('azure
+         (let* ((org reomacs/dailies-azure-org)
+                (project (plist-get source :project))
+                (quoted-project (string-replace "'" "''" project))
+                (wiql
+                 (concat
+                  "SELECT [System.Id], [System.Title], [System.WorkItemType], "
+                  "[System.State], [System.ChangedDate] FROM WorkItems WHERE "
+                  "[System.TeamProject] = '" quoted-project "' AND "
+                  "[System.ChangedDate] >= @Today - 60 AND "
+                  "([System.AssignedTo] = @Me OR [System.CreatedBy] = @Me OR "
+                  "[System.ChangedBy] = @Me) "
+                  "ORDER BY [System.ChangedDate] DESC")))
+           (push
+            (list
+             :command (list "az" "boards" "query" "--org" org
+                            "--project" project "--wiql" wiql "-o" "json")
+             :parser
+             (lambda (output)
+               (reomacs/dailies--parse-azure-work-reference-candidates
+                output org project)))
+            requests)
+           (push
+            (list
+             :command (list "az" "repos" "pr" "list" "--org" org
+                            "--project" project "--status" "all"
+                            "--top" "100" "-o" "json")
+             :parser
+             (let ((aliases reomacs/dailies-repo-aliases))
+               (lambda (output)
+                 (reomacs/dailies--parse-azure-pr-reference-candidates
+                  output org aliases))))
+            requests)))
+        (forge (error "Unknown dailies forge: %s" forge))))
+    (nreverse requests)))
+
+(defun reomacs/dailies--fetch-reference-candidates (requests)
+  "Run REQUESTS in parallel and return (CANDIDATES . ERRORS)."
+  (let ((remaining (length requests))
+        candidates errors processes)
+    (unwind-protect
+        (progn
+          (dolist (request requests)
+            (let ((request request))
+              (condition-case err
+                  (push
+                   (reomacs/dailies--run-process
+                    (plist-get request :command)
+                    (lambda (output process-error)
+                      (unwind-protect
+                          (if process-error
+                              (push process-error errors)
+                            (condition-case parse-error
+                                (setq candidates
+                                      (nconc
+                                       (funcall (plist-get request :parser)
+                                                output)
+                                       candidates))
+                              (error
+                               (push (error-message-string parse-error)
+                                     errors))))
+                        (setq remaining (1- remaining)))))
+                   processes)
+                (error
+                 (push (error-message-string err) errors)
+                 (setq remaining (1- remaining))))))
+          (while (> remaining 0)
+            (accept-process-output nil 0.05)))
+      (dolist (process processes)
+        (when (process-live-p process)
+          (delete-process process))))
+    (cons candidates (nreverse errors))))
+
+(defun reomacs/dailies--azure-reference-source (project)
+  "Return an Azure reference source for PROJECT."
+  (unless (and (stringp project) (not (string-blank-p project)))
+    (user-error
+     "Set reomacs/dailies-azure-project or use C-u to choose a project"))
+  (list :forge 'azure :project project))
+
+(defun reomacs/dailies--reference-sources (prompt)
+  "Return reference sources, prompting for scope when PROMPT is non-nil."
+  (if (not prompt)
+      (list
+       (pcase reomacs/dailies-forge
+         ('azure
+          (reomacs/dailies--azure-reference-source
+           reomacs/dailies-azure-project))
+         ('github (list :forge 'github))
+         (forge (user-error "Unknown dailies forge: %s" forge))))
+    (pcase (completing-read
+            "Reference scope: "
+            '("Current forge" "All forges" "Azure project..." "GitHub only")
+            nil t nil nil "Current forge")
+      ("Current forge" (reomacs/dailies--reference-sources nil))
+      ("All forges"
+       (list
+        (reomacs/dailies--azure-reference-source
+         (or reomacs/dailies-azure-project
+             (read-string "Azure project: ")))
+        (list :forge 'github)))
+      ("Azure project..."
+       (list
+        (reomacs/dailies--azure-reference-source
+         (read-string "Azure project: " reomacs/dailies-azure-project))))
+      ("GitHub only" (list (list :forge 'github))))))
+
+(defun reomacs/dailies--deduplicate-reference-candidates (candidates)
+  "Deduplicate CANDIDATES by URL while preserving order."
+  (let ((seen (make-hash-table :test 'equal)) result)
+    (dolist (candidate candidates (nreverse result))
+      (unless (gethash (plist-get candidate :url) seen)
+        (puthash (plist-get candidate :url) t seen)
+        (push candidate result)))))
+
+(defun reomacs/dailies--ordered-completion-table (candidates)
+  "Return a completion table preserving the order of CANDIDATES."
+  (lambda (string predicate action)
+    (if (eq action 'metadata)
+        '(metadata (display-sort-function . identity)
+                   (cycle-sort-function . identity))
+      (complete-with-action action candidates string predicate))))
+
+;;;###autoload
+(defun reomacs/dailies-insert-reference (prompt)
+  "Insert a recent forge reference using completion.
+Without a prefix argument, query `reomacs/dailies-forge'.  With prefix
+argument PROMPT, choose the current forge, both forges, a custom Azure
+project, or GitHub.  References already mentioned in dated entries rank
+before remote results."
+  (interactive "P")
+  (unless (and (derived-mode-p 'org-mode)
+               (reomacs/dailies--buffer-p))
+    (user-error "This command requires the configured dailies buffer"))
+  (let* ((sources (reomacs/dailies--reference-sources prompt))
+         (local (reomacs/dailies--recent-reference-candidates sources))
+         (requests (reomacs/dailies--reference-requests sources)))
+    (message "Fetching forge references...")
+    (redisplay)
+    (pcase-let* ((`(,remote . ,errors)
+                   (reomacs/dailies--fetch-reference-candidates requests))
+                  (remote
+                   (sort remote
+                         (lambda (left right)
+                           (string-lessp
+                            (or (plist-get right :updated) "")
+                            (or (plist-get left :updated) "")))))
+                  (candidates
+                   (reomacs/dailies--deduplicate-reference-candidates
+                    (append local remote))))
+      (dolist (error errors)
+        (message "Dailies reference fetch error: %s" error))
+      (unless candidates
+        (user-error "No forge references found%s"
+                    (if errors "; remote fetches failed" "")))
+      (let* ((choices
+              (mapcar (lambda (candidate)
+                        (cons (plist-get candidate :display) candidate))
+                      candidates))
+             (choice
+              (completing-read
+               "Insert reference: "
+               (reomacs/dailies--ordered-completion-table
+                (mapcar #'car choices))
+               nil t nil 'reomacs/dailies-reference-history))
+             (candidate (cdr (assoc choice choices))))
+        (insert (plist-get candidate :link))
+        (message "Inserted forge reference%s"
+                 (if errors
+                     (format "; %d remote request%s failed"
+                             (length errors)
+                             (if (= (length errors) 1) "" "s"))
+                   ""))))))
 
 ;; ----------------------------------------------------------------------
 ;; Duration annotations

@@ -79,7 +79,10 @@
                '(("owner/repo" . (lambda () (shell-command "false"))))))
   (should (safe-local-variable-p 'reomacs/dailies-forge 'azure))
   (should-not (safe-local-variable-p
-               'reomacs/dailies-forge 'shell-command)))
+               'reomacs/dailies-forge 'shell-command))
+  (should (safe-local-variable-p 'reomacs/dailies-azure-project "plcs"))
+  (should-not (safe-local-variable-p
+               'reomacs/dailies-azure-project '(shell-command "false"))))
 
 (ert-deftest reomacs-dailies-renders-day-and-week-status-overlays ()
   (reomacs-dailies-test--with-org
@@ -177,6 +180,92 @@
   (should (equal (reomacs/dailies--date-add-days "2026-03-28" 2)
                  "2026-03-30"))
   (should-error (reomacs/dailies--date-add-days "2026-02-30" 1)))
+
+(ert-deftest reomacs-dailies-prioritizes-recent-local-references ()
+  (reomacs-dailies-test--with-org
+      (concat
+       "* Week 2026-W35\n"
+       "** DONE <2026-08-28 Fri>\n"
+       "+ [[https://dev.azure.com/org/plcs/_git/repo/pullrequest/1][Old Azure]]\n"
+       "+ [[https://github.com/owner/repo/issues/2][GitHub]]\n"
+       "* Week 2026-W36\n"
+       "** TODO <2026-08-31 Mon>\n"
+       "+ [[https://dev.azure.com/org/plcs/_workitems/edit/3][New Azure]]\n")
+    (should
+     (equal
+      (mapcar (lambda (candidate) (plist-get candidate :display))
+              (reomacs/dailies--recent-reference-candidates
+               '((:forge azure :project "plcs"))))
+      '("Recent  New Azure" "Recent  Old Azure")))))
+
+(ert-deftest reomacs-dailies-builds-reference-candidates-and-requests ()
+  (let* ((reomacs/dailies-azure-org "https://dev.azure.com/org")
+         (reomacs/dailies-repo-aliases '(("owner/repo" . "Repo")))
+         (work-output
+          (json-encode
+           [((id . 42)
+             (fields . ((System.Title . "Fix [units]")
+                        (System.WorkItemType . "Task")
+                        (System.ChangedDate . "2026-08-31T10:00:00Z"))))]))
+         (github-output
+          (json-encode
+           [((number . 7)
+             (isPullRequest . t)
+             (url . "https://github.com/owner/repo/pull/7")
+             (title . "Refactor")
+             (updatedAt . "2026-08-31T11:00:00Z")
+             (repository . ((name . "repo")
+                            (nameWithOwner . "owner/repo"))))]))
+         (work
+          (car (reomacs/dailies--parse-azure-work-reference-candidates
+                work-output reomacs/dailies-azure-org "plcs")))
+         (github
+          (car (reomacs/dailies--parse-github-reference-candidates
+                github-output reomacs/dailies-repo-aliases)))
+         (requests
+          (reomacs/dailies--reference-requests
+           '((:forge azure :project "plcs") (:forge github)))))
+    (should (equal (plist-get work :link)
+                   "[[https://dev.azure.com/org/plcs/_workitems/edit/42][~plcs~ Task 42: Fix (units)]]"))
+    (should (equal (plist-get github :link)
+                   "[[https://github.com/owner/repo/pull/7][~Repo~ PR 7: Refactor]]"))
+    (should (= (length requests) 3))
+    (should (seq-some
+             (lambda (request)
+               (member "--include-prs" (plist-get request :command)))
+             requests))
+    (should (seq-some
+             (lambda (request)
+               (member "plcs" (plist-get request :command)))
+             requests))
+    (should (seq-some
+             (lambda (request)
+               (seq-some (lambda (argument)
+                           (string-match-p "System.AssignedTo" argument))
+                         (plist-get request :command)))
+             requests))))
+
+(ert-deftest reomacs-dailies-reference-picker-falls-back-to-local-links ()
+  (reomacs-dailies-test--with-org
+      (concat "* Week 2026-W36\n"
+              "** TODO <2026-08-31 Mon>\n"
+              "+ [[https://dev.azure.com/org/plcs/_workitems/edit/42][Task 42]]\n"
+              "+ ")
+    (goto-char (point-max))
+    (let ((reomacs/dailies-forge 'azure)
+          (reomacs/dailies-azure-project "plcs"))
+      (cl-letf (((symbol-function 'reomacs/dailies--buffer-p)
+                 (lambda (&optional _) t))
+                ((symbol-function
+                  'reomacs/dailies--fetch-reference-candidates)
+                 (lambda (_) '(nil . ("offline"))))
+                ((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest _)
+                   (car (all-completions "" collection)))))
+        (reomacs/dailies-insert-reference nil)))
+    (should (string-suffix-p
+             "+ [[https://dev.azure.com/org/plcs/_workitems/edit/42][Task 42]]"
+             (buffer-string)))))
 
 (ert-deftest reomacs-dailies-emits-both-same-day-pr-events ()
   (let ((emitted nil)
