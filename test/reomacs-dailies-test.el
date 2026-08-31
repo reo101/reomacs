@@ -82,7 +82,11 @@
                'reomacs/dailies-forge 'shell-command))
   (should (safe-local-variable-p 'reomacs/dailies-azure-project "plcs"))
   (should-not (safe-local-variable-p
-               'reomacs/dailies-azure-project '(shell-command "false"))))
+               'reomacs/dailies-azure-project '(shell-command "false")))
+  (should (safe-local-variable-p
+           'reomacs/dailies-default-repository "org/project/repo"))
+  (should-not (safe-local-variable-p
+               'reomacs/dailies-default-repository '(shell-command "false"))))
 
 (ert-deftest reomacs-dailies-renders-day-and-week-status-overlays ()
   (reomacs-dailies-test--with-org
@@ -190,12 +194,13 @@
        "+ [[https://github.com/owner/repo/issues/2][GitHub]]\n"
        "* Week 2026-W36\n"
        "** TODO <2026-08-31 Mon>\n"
-       "+ [[https://dev.azure.com/org/plcs/_workitems/edit/3][New Azure]]\n")
+       "+ [[https://dev.azure.com/org/plcs/_workitems/edit/3][New Azure]]\n"
+       "+ [[https://dev.azure.com/org/plcs/_git/other/pullrequest/4][Other repo]]\n")
     (should
      (equal
       (mapcar (lambda (candidate) (plist-get candidate :display))
               (reomacs/dailies--recent-reference-candidates
-               '((:forge azure :project "plcs"))))
+               '((:forge azure :project "plcs" :repository "repo"))))
       '("Recent  New Azure" "Recent  Old Azure")))))
 
 (ert-deftest reomacs-dailies-builds-reference-candidates-and-requests ()
@@ -224,7 +229,8 @@
                 github-output reomacs/dailies-repo-aliases)))
          (requests
           (reomacs/dailies--reference-requests
-           '((:forge azure :project "plcs") (:forge github)))))
+           '((:forge azure :project "plcs" :repository "repo")
+             (:forge github :repository "owner/repo")))))
     (should (equal (plist-get work :link)
                    "[[https://dev.azure.com/org/plcs/_workitems/edit/42][~plcs~ Task 42: Fix (units)]]"))
     (should (equal (plist-get github :link)
@@ -240,10 +246,35 @@
              requests))
     (should (seq-some
              (lambda (request)
+               (member "--repository" (plist-get request :command)))
+             requests))
+    (should (seq-some
+             (lambda (request)
+               (member "--repo=owner/repo" (plist-get request :command)))
+             requests))
+    (should (seq-some
+             (lambda (request)
                (seq-some (lambda (argument)
                            (string-match-p "System.AssignedTo" argument))
                          (plist-get request :command)))
              requests))))
+
+(ert-deftest reomacs-dailies-preselects-configured-reference-repository ()
+  (let* ((reomacs/dailies-repo-aliases
+          '(("baringa/plcs/coral-asset-rust-bess" . "CRB")))
+         (reomacs/dailies-default-repository
+          "baringa/plcs/coral-asset-rust-bess")
+         (sources '((:forge azure :project "plcs")))
+         (choices
+          (reomacs/dailies--reference-repository-choices sources))
+         (scoped
+          (reomacs/dailies--apply-reference-repository
+           sources reomacs/dailies-default-repository)))
+    (should (equal (caar choices)
+                   "CRB  baringa/plcs/coral-asset-rust-bess"))
+    (should (equal (plist-get (car scoped) :repository)
+                   "coral-asset-rust-bess"))
+    (should (equal (cdar (last choices)) nil))))
 
 (ert-deftest reomacs-dailies-reference-picker-shows-local-links-immediately ()
   (reomacs-dailies-test--with-org

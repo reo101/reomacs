@@ -203,6 +203,13 @@ Set as a file-local variable in dailies.org if you deal with several orgs."
   :group 'reo101
   :safe (lambda (value) (and (stringp value) (not (string-blank-p value)))))
 
+(defcustom reomacs/dailies-default-repository nil
+  "Repository identity preselected by the forge reference picker.
+Use an Azure organization/project/repository identity or GitHub owner/repo."
+  :type '(choice (const :tag "All repositories" nil) string)
+  :group 'reo101
+  :safe (lambda (value) (and (stringp value) (not (string-blank-p value)))))
+
 (defun reomacs/dailies--format-event (event-type props)
   "Format an Org line for EVENT-TYPE using PROPS."
   (let ((url (plist-get props :url))
@@ -839,6 +846,9 @@ assigned PRs and PRs whose lifecycle changed on the requested date."
 (defvar reomacs/dailies-reference-history nil
   "Minibuffer history for dailies forge references.")
 
+(defvar reomacs/dailies-reference-repository-history nil
+  "Minibuffer history for dailies repository scopes.")
+
 (defun reomacs/dailies--reference-title (value)
   "Return VALUE as safe single-line Org link description text."
   (string-replace
@@ -865,17 +875,42 @@ assigned PRs and PRs whose lifecycle changed on the requested date."
             "\\(?:/pullrequest/[0-9]+\\|/_workitems/edit/[0-9]+\\)" url))
       'azure))))
 
+(defun reomacs/dailies--reference-url-repository (url)
+  "Return the repository identity encoded in reference URL, or nil."
+  (let ((case-fold-search t))
+    (cond
+     ((string-match
+       "github\\.com/\\([^/]+/[^/]+\\)/\\(?:issues\\|pull\\)/[0-9]+" url)
+      (match-string 1 url))
+     ((string-match
+       "dev\\.azure\\.com/[^/]+/[^/]+/_git/\\([^/]+\\)/pullrequest/[0-9]+"
+       url)
+      (match-string 1 url)))))
+
+(defun reomacs/dailies--reference-matches-source-p (url source)
+  "Return non-nil when reference URL belongs to SOURCE."
+  (and (eq (reomacs/dailies--reference-url-forge url)
+           (plist-get source :forge))
+       (let ((selected (plist-get source :repository))
+             (actual (reomacs/dailies--reference-url-repository url)))
+         (or (null selected)
+             (null actual)
+             (string-equal-ignore-case selected actual)))))
+
 (defun reomacs/dailies--recent-reference-candidates (sources)
   "Return up to 30 local reference candidates matching SOURCES.
 References in later date entries come first."
-  (let ((forges (mapcar (lambda (source) (plist-get source :forge)) sources))
-        candidates)
+  (let (candidates)
     (org-element-map (org-element-parse-buffer) 'link
       (lambda (link)
         (let* ((url (org-element-property :raw-link link))
-               (forge (and url (reomacs/dailies--reference-url-forge url)))
                (position (org-element-property :begin link)))
-          (when (and forge (memq forge forges)
+          (when (and url
+                     (seq-some
+                      (lambda (source)
+                        (reomacs/dailies--reference-matches-source-p
+                         url source))
+                      sources)
                      (save-excursion
                        (goto-char position)
                        (reomacs/dailies--goto-containing-date-heading)))
@@ -972,22 +1007,26 @@ References in later date entries come first."
     (dolist (source sources)
       (pcase (plist-get source :forge)
         ('github
-         (push
-          (list
-           :command
-           (list "gh" "search" "issues" "--involves=@me" "--include-prs"
-                 "--sort=updated" "--order=desc" "--limit=100" "--json"
-                 (concat "number,repository,url,title,updatedAt,"
-                         "isPullRequest,state"))
-           :parser
-           (let ((aliases reomacs/dailies-repo-aliases))
-             (lambda (output)
-               (reomacs/dailies--parse-github-reference-candidates
-                output aliases))))
-          requests))
+         (let ((repository (plist-get source :repository)))
+           (push
+            (list
+             :command
+             (append
+              (list "gh" "search" "issues" "--involves=@me" "--include-prs")
+              (when repository (list (format "--repo=%s" repository)))
+              (list "--sort=updated" "--order=desc" "--limit=100" "--json"
+                    (concat "number,repository,url,title,updatedAt,"
+                            "isPullRequest,state")))
+             :parser
+             (let ((aliases reomacs/dailies-repo-aliases))
+               (lambda (output)
+                 (reomacs/dailies--parse-github-reference-candidates
+                  output aliases))))
+            requests)))
         ('azure
          (let* ((org reomacs/dailies-azure-org)
                 (project (plist-get source :project))
+                (repository (plist-get source :repository))
                 (quoted-project (string-replace "'" "''" project))
                 (wiql
                  (concat
@@ -1009,9 +1048,12 @@ References in later date entries come first."
             requests)
            (push
             (list
-             :command (list "az" "repos" "pr" "list" "--org" org
-                            "--project" project "--status" "all"
-                            "--top" "100" "-o" "json")
+             :command
+             (append (list "az" "repos" "pr" "list" "--org" org
+                           "--project" project)
+                     (when repository
+                       (list "--repository" repository))
+                     (list "--status" "all" "--top" "100" "-o" "json"))
              :parser
              (let ((aliases reomacs/dailies-repo-aliases))
                (lambda (output)
@@ -1121,6 +1163,90 @@ References in later date entries come first."
          (read-string "Azure project: " reomacs/dailies-azure-project))))
       ("GitHub only" (list (list :forge 'github))))))
 
+(defun reomacs/dailies--repository-for-source (identity source)
+  "Resolve repository IDENTITY for reference SOURCE, or return nil."
+  (when identity
+    (let* ((parts (split-string
+                   (reomacs/dailies--canonical-repo-id identity) "/" t))
+           (count (length parts)))
+      (pcase (plist-get source :forge)
+        ('azure
+         (cond
+          ((= count 1) (car parts))
+          ((and (= count 2)
+                (string-equal-ignore-case
+                 (car parts) (plist-get source :project)))
+           (cadr parts))
+          ((and (>= count 3)
+                (string-equal-ignore-case
+                 (nth (- count 2) parts) (plist-get source :project)))
+           (car (last parts)))))
+        ('github
+         (when (= count 2)
+           (string-join parts "/")))))))
+
+(defun reomacs/dailies--apply-reference-repository (sources identity)
+  "Apply repository IDENTITY to each compatible source in SOURCES."
+  (mapcar
+   (lambda (source)
+     (let ((source (copy-sequence source)))
+       (when-let* ((repository
+                    (reomacs/dailies--repository-for-source identity source)))
+         (setq source (plist-put source :repository repository)))
+       source))
+   sources))
+
+(defun reomacs/dailies--reference-repository-choices (sources)
+  "Return repository completion choices compatible with SOURCES."
+  (let ((choices
+         (delq
+          nil
+          (mapcar
+           (lambda (alias)
+             (when (seq-some
+                    (lambda (source)
+                      (reomacs/dailies--repository-for-source
+                       (car alias) source))
+                    sources)
+               (cons (format "%s  %s" (cdr alias) (car alias))
+                     (car alias))))
+           reomacs/dailies-repo-aliases))))
+    (when (and reomacs/dailies-default-repository
+               (seq-some
+                (lambda (source)
+                  (reomacs/dailies--repository-for-source
+                   reomacs/dailies-default-repository source))
+                sources)
+               (not (seq-find
+                     (lambda (choice)
+                       (equal (cdr choice)
+                              reomacs/dailies-default-repository))
+                     choices)))
+      (push (cons reomacs/dailies-default-repository
+                  reomacs/dailies-default-repository)
+            choices))
+    (let ((default
+           (seq-find
+            (lambda (choice)
+              (equal (cdr choice) reomacs/dailies-default-repository))
+            choices)))
+      (append (and default (list default))
+              (delete default choices)
+              (list (cons "All repositories" nil))))))
+
+(defun reomacs/dailies--prompt-reference-repository (sources)
+  "Prompt for a repository and apply it to compatible SOURCES."
+  (let* ((choices (reomacs/dailies--reference-repository-choices sources))
+         (choice
+          (completing-read
+           "Repository for references: " (mapcar #'car choices)
+           nil nil nil 'reomacs/dailies-reference-repository-history
+           (caar choices)))
+         (entry (assoc choice choices))
+         (identity (if entry (cdr entry) (string-trim choice))))
+    (reomacs/dailies--apply-reference-repository
+     sources (unless (string-empty-p (or identity "")) identity))))
+
 (defun reomacs/dailies--deduplicate-reference-candidates (candidates)
   "Deduplicate CANDIDATES by URL while preserving order."
   (let ((seen (make-hash-table :test 'equal)) result)
@@ -1146,13 +1272,16 @@ References in later date entries come first."
   "Insert a recent forge reference using completion.
 Without a prefix argument, query `reomacs/dailies-forge'.  With prefix
 argument PROMPT, choose the current forge, both forges, a custom Azure
-project, or GitHub.  References already mentioned in dated entries appear
-immediately; remote results stream into the active completion UI."
+project, or GitHub.  Prompt for a repository, preselecting
+`reomacs/dailies-default-repository'.  Local references appear immediately;
+remote results stream into the active completion UI."
   (interactive "P")
   (unless (and (derived-mode-p 'org-mode)
                (reomacs/dailies--buffer-p))
     (user-error "This command requires the configured dailies buffer"))
-  (let* ((sources (reomacs/dailies--reference-sources prompt))
+  (let* ((sources
+          (reomacs/dailies--prompt-reference-repository
+           (reomacs/dailies--reference-sources prompt)))
          (local (reomacs/dailies--recent-reference-candidates sources))
          (requests (reomacs/dailies--reference-requests sources))
          (state (list :local local :remote nil :candidates local
