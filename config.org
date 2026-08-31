@@ -1683,6 +1683,15 @@ If point is after a non-delimiter, delete back to the previous boundary."
     (vertico-posframe-font "Maple Mono NF CN-10.8")
     (posframe-text-scale-factor-function (lambda (_) 0))
     :config
+    (defun reomacs/vertico-posframe-fixed-size (buffer)
+      "Return a stable Vertico posframe size for BUFFER."
+      (let* ((size (vertico-posframe-get-size buffer))
+             (width (max 40 (round (* (frame-width) 0.62)))))
+        (dolist (property '(:width :min-width :max-width) size)
+          (setq size (plist-put size property width)))))
+
+    (setq vertico-posframe-size-function
+          #'reomacs/vertico-posframe-fixed-size)
     (vertico-posframe-mode 1))
 
   ;; Persist history over Emacs restarts. Vertico sorts by history position.
