@@ -1021,42 +1021,71 @@ References in later date entries come first."
         (forge (error "Unknown dailies forge: %s" forge))))
     (nreverse requests)))
 
-(defun reomacs/dailies--fetch-reference-candidates (requests)
-  "Run REQUESTS in parallel and return (CANDIDATES . ERRORS)."
-  (let ((remaining (length requests))
-        candidates errors processes)
-    (unwind-protect
-        (progn
-          (dolist (request requests)
-            (let ((request request))
-              (condition-case err
-                  (push
-                   (reomacs/dailies--run-process
-                    (plist-get request :command)
-                    (lambda (output process-error)
-                      (unwind-protect
-                          (if process-error
-                              (push process-error errors)
-                            (condition-case parse-error
-                                (setq candidates
-                                      (nconc
-                                       (funcall (plist-get request :parser)
-                                                output)
-                                       candidates))
-                              (error
-                               (push (error-message-string parse-error)
-                                     errors))))
-                        (setq remaining (1- remaining)))))
-                   processes)
-                (error
-                 (push (error-message-string err) errors)
-                 (setq remaining (1- remaining))))))
-          (while (> remaining 0)
-            (accept-process-output nil 0.05)))
-      (dolist (process processes)
-        (when (process-live-p process)
-          (delete-process process))))
-    (cons candidates (nreverse errors))))
+(defun reomacs/dailies--refresh-reference-minibuffer (state)
+  "Refresh the active completion UI from reference STATE."
+  (when-let* ((buffer (plist-get state :minibuffer))
+              ((not (plist-get state :closed)))
+              (window (active-minibuffer-window))
+              ((eq buffer (window-buffer window))))
+    (with-current-buffer buffer
+      (if (and (local-variable-p 'vertico--input)
+               (fboundp 'vertico--exhibit))
+          (progn
+            (set 'vertico--input nil)
+            (funcall (symbol-function 'vertico--exhibit)))
+        (when (fboundp 'completion--flush-all-sorted-completions)
+          (completion--flush-all-sorted-completions)))
+      (when (and (zerop (plist-get state :remaining))
+                 (null (plist-get state :candidates)))
+        (minibuffer-message "No references found; remote fetches failed")))))
+
+(defun reomacs/dailies--finish-reference-request (state candidates error)
+  "Add CANDIDATES or ERROR to reference STATE and refresh completion."
+  (unless (plist-get state :closed)
+    (when candidates
+      (plist-put state :remote
+                 (nconc candidates (plist-get state :remote))))
+    (when error
+      (plist-put state :errors (cons error (plist-get state :errors))))
+    (plist-put state :remaining (1- (plist-get state :remaining)))
+    (let ((remote
+           (sort (plist-get state :remote)
+                 (lambda (left right)
+                   (string-lessp
+                    (or (plist-get right :updated) "")
+                    (or (plist-get left :updated) ""))))))
+      (plist-put state :remote remote)
+      (plist-put
+       state :candidates
+       (reomacs/dailies--deduplicate-reference-candidates
+        (append (plist-get state :local) remote))))
+    (run-at-time 0 nil #'reomacs/dailies--refresh-reference-minibuffer state)))
+
+(defun reomacs/dailies--start-reference-fetch (requests state)
+  "Start asynchronous REQUESTS and stream their results into STATE."
+  (plist-put state :remaining (length requests))
+  (dolist (request requests)
+    (let ((request request))
+      (condition-case err
+          (plist-put
+           state :processes
+           (cons
+            (reomacs/dailies--run-process
+             (plist-get request :command)
+             (lambda (output process-error)
+               (if process-error
+                   (reomacs/dailies--finish-reference-request
+                    state nil process-error)
+                 (condition-case parse-error
+                     (reomacs/dailies--finish-reference-request
+                      state (funcall (plist-get request :parser) output) nil)
+                   (error
+                    (reomacs/dailies--finish-reference-request
+                     state nil (error-message-string parse-error)))))))
+            (plist-get state :processes)))
+        (error
+         (reomacs/dailies--finish-reference-request
+          state nil (error-message-string err)))))))
 
 (defun reomacs/dailies--azure-reference-source (project)
   "Return an Azure reference source for PROJECT."
@@ -1100,64 +1129,65 @@ References in later date entries come first."
         (puthash (plist-get candidate :url) t seen)
         (push candidate result)))))
 
-(defun reomacs/dailies--ordered-completion-table (candidates)
-  "Return a completion table preserving the order of CANDIDATES."
+(defun reomacs/dailies--ordered-completion-table (state)
+  "Return a dynamic completion table backed by reference STATE."
   (lambda (string predicate action)
     (if (eq action 'metadata)
         '(metadata (display-sort-function . identity)
                    (cycle-sort-function . identity))
-      (complete-with-action action candidates string predicate))))
+      (complete-with-action
+       action
+       (mapcar (lambda (candidate) (plist-get candidate :display))
+               (plist-get state :candidates))
+       string predicate))))
 
 ;;;###autoload
 (defun reomacs/dailies-insert-reference (prompt)
   "Insert a recent forge reference using completion.
 Without a prefix argument, query `reomacs/dailies-forge'.  With prefix
 argument PROMPT, choose the current forge, both forges, a custom Azure
-project, or GitHub.  References already mentioned in dated entries rank
-before remote results."
+project, or GitHub.  References already mentioned in dated entries appear
+immediately; remote results stream into the active completion UI."
   (interactive "P")
   (unless (and (derived-mode-p 'org-mode)
                (reomacs/dailies--buffer-p))
     (user-error "This command requires the configured dailies buffer"))
   (let* ((sources (reomacs/dailies--reference-sources prompt))
          (local (reomacs/dailies--recent-reference-candidates sources))
-         (requests (reomacs/dailies--reference-requests sources)))
-    (message "Fetching forge references...")
-    (redisplay)
-    (pcase-let* ((`(,remote . ,errors)
-                   (reomacs/dailies--fetch-reference-candidates requests))
-                  (remote
-                   (sort remote
-                         (lambda (left right)
-                           (string-lessp
-                            (or (plist-get right :updated) "")
-                            (or (plist-get left :updated) "")))))
-                  (candidates
-                   (reomacs/dailies--deduplicate-reference-candidates
-                    (append local remote))))
-      (dolist (error errors)
-        (message "Dailies reference fetch error: %s" error))
-      (unless candidates
-        (user-error "No forge references found%s"
-                    (if errors "; remote fetches failed" "")))
-      (let* ((choices
-              (mapcar (lambda (candidate)
-                        (cons (plist-get candidate :display) candidate))
-                      candidates))
-             (choice
-              (completing-read
-               "Insert reference: "
-               (reomacs/dailies--ordered-completion-table
-                (mapcar #'car choices))
-               nil t nil 'reomacs/dailies-reference-history))
-             (candidate (cdr (assoc choice choices))))
-        (insert (plist-get candidate :link))
-        (message "Inserted forge reference%s"
-                 (if errors
-                     (format "; %d remote request%s failed"
-                             (length errors)
-                             (if (= (length errors) 1) "" "s"))
-                   ""))))))
+         (requests (reomacs/dailies--reference-requests sources))
+         (state (list :local local :remote nil :candidates local
+                      :errors nil :remaining 0 :processes nil
+                      :minibuffer nil :closed nil))
+         choice)
+    (unwind-protect
+        (setq choice
+              (minibuffer-with-setup-hook
+                  (lambda ()
+                    (plist-put state :minibuffer (current-buffer))
+                    (reomacs/dailies--start-reference-fetch requests state))
+                (completing-read
+                 "Insert reference: "
+                 (reomacs/dailies--ordered-completion-table state)
+                 nil t nil 'reomacs/dailies-reference-history)))
+      (plist-put state :closed t)
+      (dolist (process (plist-get state :processes))
+        (when (process-live-p process)
+          (delete-process process))))
+    (dolist (error (nreverse (plist-get state :errors)))
+      (message "Dailies reference fetch error: %s" error))
+    (let ((candidate
+           (seq-find (lambda (item)
+                       (equal choice (plist-get item :display)))
+                     (plist-get state :candidates))))
+      (unless candidate
+        (user-error "Reference disappeared before insertion"))
+      (insert (plist-get candidate :link))
+      (message "Inserted forge reference%s"
+               (let ((errors (length (plist-get state :errors))))
+                 (if (zerop errors)
+                     ""
+                   (format "; %d remote request%s failed"
+                           errors (if (= errors 1) "" "s"))))))))
 
 ;; ----------------------------------------------------------------------
 ;; Duration annotations

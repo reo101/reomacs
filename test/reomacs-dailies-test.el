@@ -245,7 +245,7 @@
                          (plist-get request :command)))
              requests))))
 
-(ert-deftest reomacs-dailies-reference-picker-falls-back-to-local-links ()
+(ert-deftest reomacs-dailies-reference-picker-shows-local-links-immediately ()
   (reomacs-dailies-test--with-org
       (concat "* Week 2026-W36\n"
               "** TODO <2026-08-31 Mon>\n"
@@ -256,9 +256,6 @@
           (reomacs/dailies-azure-project "plcs"))
       (cl-letf (((symbol-function 'reomacs/dailies--buffer-p)
                  (lambda (&optional _) t))
-                ((symbol-function
-                  'reomacs/dailies--fetch-reference-candidates)
-                 (lambda (_) '(nil . ("offline"))))
                 ((symbol-function 'completing-read)
                  (lambda (_prompt collection &rest _)
                    (car (all-completions "" collection)))))
@@ -266,6 +263,39 @@
     (should (string-suffix-p
              "+ [[https://dev.azure.com/org/plcs/_workitems/edit/42][Task 42]]"
              (buffer-string)))))
+
+(ert-deftest reomacs-dailies-reference-table-streams-remote-results ()
+  (let* ((local (list (list :url "local" :display "Recent local")))
+         (remote (list (list :url "remote" :display "Remote result"
+                             :updated "2026-08-31T10:00:00Z")))
+         (state (list :local local :remote nil :candidates local
+                      :errors nil :remaining 1 :processes nil
+                      :minibuffer nil :closed nil))
+         (table (reomacs/dailies--ordered-completion-table state)))
+    (should (equal (all-completions "" table) '("Recent local")))
+    (cl-letf (((symbol-function 'run-at-time) #'ignore))
+      (reomacs/dailies--finish-reference-request state remote nil))
+    (should (zerop (plist-get state :remaining)))
+    (should (equal (all-completions "" table)
+                   '("Recent local" "Remote result")))))
+
+(ert-deftest reomacs-dailies-reference-refreshes-vertico-in-place ()
+  (with-temp-buffer
+    (let ((buffer (current-buffer))
+          (state nil)
+          exhibited)
+      (set (make-local-variable 'vertico--input) '("typed" . 5))
+      (setq state (list :minibuffer buffer :closed nil
+                        :remaining 1 :candidates '((:display "Recent"))))
+      (cl-letf (((symbol-function 'active-minibuffer-window)
+                 (lambda () 'window))
+                ((symbol-function 'window-buffer)
+                 (lambda (_) buffer))
+                ((symbol-function 'vertico--exhibit)
+                 (lambda () (setq exhibited t))))
+        (reomacs/dailies--refresh-reference-minibuffer state))
+      (should exhibited)
+      (should-not vertico--input))))
 
 (ert-deftest reomacs-dailies-emits-both-same-day-pr-events ()
   (let ((emitted nil)
