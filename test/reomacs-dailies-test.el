@@ -113,6 +113,22 @@
       (should (member " — 2/8h" texts))
       (should (member " — 8.5/40h" texts)))))
 
+(ert-deftest reomacs-dailies-hours-overlays-survive-folding ()
+  (reomacs-dailies-test--with-org
+      (concat "* Week 2026-W36\n"
+              "** TODO <2026-08-31 Mon>\n"
+              "+ One {6.5h}\n")
+    (setq-local reomacs/dailies-daily-target-hours 8)
+    (reomacs/dailies-refresh-week-status)
+    (let ((overlay (nth 1 reomacs/dailies--week-status-overlays)))
+      (should (= (overlay-start overlay) (1- (overlay-end overlay))))
+      (goto-char (overlay-end overlay))
+      (org-fold-hide-subtree)
+      ;; The fold covers the line-end position but not the heading text,
+      ;; so the overlay must rest entirely on visible characters.
+      (should (get-char-property (overlay-end overlay) 'invisible))
+      (should-not (get-char-property (overlay-start overlay) 'invisible)))))
+
 (ert-deftest reomacs-dailies-only-dirties-hours-for-relevant-edits ()
   (reomacs-dailies-test--with-org
       "** TODO <2026-08-31 Mon>\n+ Ordinary task\n"
@@ -232,6 +248,20 @@
                "\\*\\* TODO <2099-01-02 Fri>\n\n\\+ \n"
                (buffer-string)))
       (should-not (string-match-p "\\*\\*\\* " (buffer-string))))))
+
+(ert-deftest reomacs-dailies-new-day-date-skips-weekends ()
+  ;; Friday pending → Friday; Saturday with pending Friday → Monday
+  (should (equal (reomacs/dailies--next-new-day-date "2026-09-04" "2026-09-04")
+                 "2026-09-07"))
+  (should (equal (reomacs/dailies--next-new-day-date "2026-09-03" "2026-09-04")
+                 "2026-09-04"))
+  (should (equal (reomacs/dailies--next-new-day-date "2026-09-03" "2026-09-05")
+                 "2026-09-07"))
+  (should (equal (reomacs/dailies--next-new-day-date "2026-09-04" "2026-09-05")
+                 "2026-09-07"))
+  ;; Latest entry in the future chains from it
+  (should (equal (reomacs/dailies--next-new-day-date "2026-09-07" "2026-09-05")
+                 "2026-09-08")))
 
 (ert-deftest reomacs-dailies-meta-return-inserts-compact-headings ()
   (reomacs-dailies-test--with-org

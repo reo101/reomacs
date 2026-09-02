@@ -187,9 +187,34 @@ Return the position of the new date heading."
                heading "\n\n" task)))
     (reomacs/dailies--find-date-heading iso-date)))
 
+(defun reomacs/dailies--workday-on-or-after (iso-date)
+  "Return ISO-DATE itself when it is a workday, else the next workday."
+  (if (< (string-to-number
+          (format-time-string
+           "%u" (reomacs/dailies--date-time iso-date)))
+         6)
+      iso-date
+    (format-time-string
+     "%Y-%m-%d"
+     (reomacs/dailies--next-workday
+      (reomacs/dailies--date-time iso-date)))))
+
+(defun reomacs/dailies--next-new-day-date (latest-date today)
+  "Return the date a new dailies entry should target.
+LATEST-DATE is the newest existing entry and TODAY the current date.
+Pending workdays land on today, weekends roll to Monday, and future
+entries chain to the next workday."
+  (if (string< latest-date today)
+      (reomacs/dailies--workday-on-or-after today)
+    (format-time-string
+     "%Y-%m-%d"
+     (reomacs/dailies--next-workday
+      (reomacs/dailies--date-time latest-date)))))
+
 ;;;###autoload
 (defun reomacs/dailies-new-day ()
-  "Create today's flat dailies entry, or the next workday if it exists."
+  "Create today's flat dailies entry, or the next workday if it exists.
+Weekends roll forward to the next workday."
   (interactive)
   (let ((dailies-buf (reomacs/dailies--buffer))
         (today (format-time-string "%Y-%m-%d"))
@@ -208,12 +233,7 @@ Return the position of the new date heading."
                (car entries)))
              (latest-date (nth 1 latest))
              (target-date
-              (if (string< latest-date today)
-                  today
-                (format-time-string
-                 "%Y-%m-%d"
-                 (reomacs/dailies--next-workday
-                  (reomacs/dailies--date-time latest-date))))))
+              (reomacs/dailies--next-new-day-date latest-date today)))
         (setq created
               (reomacs/dailies--insert-day-entry
                target-date (reomacs/dailies--date-time target-date)))
@@ -1795,7 +1815,10 @@ Submitted markers still count toward logged work."
 (defun reomacs/dailies--add-hours-status-overlay
     (position minutes target-minutes label complete)
   "Display MINUTES/TARGET-MINUTES after POSITION for LABEL.
-COMPLETE controls the checkmark independently of the hour count."
+COMPLETE controls the checkmark independently of the hour count.
+The overlay ends at POSITION but starts one character earlier so it
+rests on visible heading text; Org folds start exactly at the line
+end, where an after-string would be hidden with the folded region."
   (let* ((base-face (if complete 'success 'shadow))
          (status
           (concat
@@ -1807,7 +1830,7 @@ COMPLETE controls the checkmark independently of the hour count."
             'face 'reomacs/dailies-hours-target-face)
            (propertize (concat "h" (if complete " ✓" ""))
                        'face base-face)))
-         (overlay (make-overlay position position)))
+         (overlay (make-overlay (1- position) position)))
     (overlay-put overlay 'after-string status)
     (overlay-put overlay 'help-echo
                  (format "%s logged hours / target" label))
