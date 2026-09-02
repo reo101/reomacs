@@ -114,52 +114,133 @@ Return nil when point is not inside a level-two date subtree."
       (setq found (org-up-heading-safe)))
     (and found (reomacs/dailies--date-at-heading))))
 
+(defun reomacs/dailies--scan-date-headings ()
+  "Return a list of (position iso-date) for level-two date headings."
+  (save-excursion
+    (goto-char (point-min))
+    (let (entries)
+      (while (re-search-forward org-heading-regexp nil t)
+        (goto-char (match-beginning 0))
+        (when-let* ((date (reomacs/dailies--date-at-heading)))
+          (push (list (point) date) entries))
+        (forward-line 1))
+      (nreverse entries))))
+
+(defun reomacs/dailies--find-date-heading (iso-date)
+  "Return the position of the level-two heading for ISO-DATE, or nil."
+  (when-let* ((entry
+               (seq-find
+                (lambda (candidate)
+                  (string= (nth 1 candidate) iso-date))
+                (reomacs/dailies--scan-date-headings))))
+    (nth 0 entry)))
+
+(defun reomacs/dailies--insert-day-entry (iso-date time)
+  "Insert a dailies entry for ISO-DATE and TIME in chronological order.
+Return the position of the new date heading."
+  (let* ((entries (reomacs/dailies--scan-date-headings))
+         (last-entry (car (last entries)))
+         (later (seq-find (lambda (entry)
+                            (string< iso-date (nth 1 entry)))
+                          entries))
+         (week-id (reomacs/dailies--week-id time))
+         (heading (concat "** " (or (car org-not-done-keywords) "TODO")
+                          " " (format-time-string "<%Y-%m-%d %a>" time))))
+    (unless entries
+      (user-error "No date entries found in dailies file"))
+    (if later
+        (let* ((pos (nth 0 later))
+               (week-pos (save-excursion
+                           (goto-char pos)
+                           (and (re-search-backward "^\\* Week " nil t)
+                                (point))))
+               (same-week
+                (and week-pos
+                     (save-excursion
+                       (goto-char week-pos)
+                       (string= (buffer-substring-no-properties
+                                 (+ (point) 7) (line-end-position))
+                                week-id)))))
+          (goto-char (if same-week pos (or week-pos pos)))
+          (insert
+           (concat (if same-week
+                       "\n"
+                     (concat "\n* Week " week-id "\n\n"))
+                   heading "\n\n+ \n\n")))
+      (goto-char (save-excursion
+                   (goto-char (nth 0 last-entry))
+                   (org-end-of-subtree t)
+                   (point)))
+      (skip-chars-backward " \t\n")
+      (end-of-line)
+      (insert
+       (concat "\n\n"
+               (unless (equal week-id
+                              (reomacs/dailies--week-id
+                               (reomacs/dailies--date-time
+                                (nth 1 last-entry))))
+                 (concat "* Week " week-id "\n\n"))
+               heading "\n\n+ ")))
+    (reomacs/dailies--find-date-heading iso-date)))
+
 ;;;###autoload
 (defun reomacs/dailies-new-day ()
   "Create today's flat dailies entry, or the next workday if it exists."
   (interactive)
-  (let* ((dailies-buf (reomacs/dailies--buffer))
-         (today (calendar-current-date))
-         (today-time (encode-time 0 0 0
-                                  (nth 1 today) (nth 0 today) (nth 2 today)))
-         last-date-pos
-         last-date-str)
+  (let ((dailies-buf (reomacs/dailies--buffer))
+        (today (format-time-string "%Y-%m-%d"))
+        created)
     (with-current-buffer dailies-buf
-      (goto-char (point-min))
-      (while (re-search-forward org-heading-regexp nil t)
-        (goto-char (match-beginning 0))
-        (when-let* ((date (reomacs/dailies--date-at-heading)))
-          (when (or (null last-date-str)
-                    (string< last-date-str date)
-                    (and (string= last-date-str date)
-                         (> (point) last-date-pos)))
-            (setq last-date-pos (point)
-                  last-date-str date)))
-        (forward-line 1))
-      (unless last-date-pos
-        (user-error "No date entries found in dailies file"))
-      (let* ((last-time (reomacs/dailies--date-time last-date-str))
-             (new-time (if (time-less-p last-time today-time)
-                           today-time
-                         (reomacs/dailies--next-workday last-time)))
-             (new-date-str (format-time-string "<%Y-%m-%d %a>" new-time))
-             (last-week-id (reomacs/dailies--week-id last-time))
-             (new-week-id (reomacs/dailies--week-id new-time))
-             (insert-pos (save-excursion
-                           (goto-char last-date-pos)
-                           (org-end-of-subtree t)
-                           (point))))
-        (goto-char insert-pos)
-        (skip-chars-backward " \t\n")
-        (end-of-line)
-        (insert "\n\n")
-        (unless (equal last-week-id new-week-id)
-          (insert "* Week " new-week-id "\n\n"))
-        (insert "** " (or (car org-not-done-keywords) "TODO")
-                " " new-date-str "\n\n+ ")
+      (let* ((entries (reomacs/dailies--scan-date-headings))
+             (latest
+              (seq-reduce
+               (lambda (best entry)
+                 (if (or (string< (nth 1 best) (nth 1 entry))
+                         (and (string= (nth 1 best) (nth 1 entry))
+                              (< (nth 0 best) (nth 0 entry))))
+                     entry
+                   best))
+               (cdr entries)
+               (car entries)))
+             (latest-date (nth 1 latest))
+             (target-date
+              (if (string< latest-date today)
+                  today
+                (format-time-string
+                 "%Y-%m-%d"
+                 (reomacs/dailies--next-workday
+                  (reomacs/dailies--date-time latest-date))))))
+        (setq created
+              (reomacs/dailies--insert-day-entry
+               target-date (reomacs/dailies--date-time target-date)))
+        (goto-char created)
+        (when (re-search-forward
+               "^\\+ " (save-excursion (org-end-of-subtree t)) t)
+          (end-of-line))
         (reomacs/dailies-refresh-week-status)
         (switch-to-buffer dailies-buf)
-        (message "Created new daily entry for %s" new-date-str)))))
+        (message "Created new daily entry for %s"
+                 (format-time-string "<%Y-%m-%d %a>"
+                                     (reomacs/dailies--date-time target-date)))))))
+
+;;;###autoload
+(defun reomacs/dailies-goto-today ()
+  "Open today's dailies entry, creating it first if missing."
+  (interactive)
+  (let ((dailies-buf (reomacs/dailies--buffer))
+        (today (format-time-string "%Y-%m-%d"))
+        position)
+    (with-current-buffer dailies-buf
+      (setq position
+            (or (reomacs/dailies--find-date-heading today)
+                (reomacs/dailies--insert-day-entry
+                 today (reomacs/dailies--date-time today))))
+      (reomacs/dailies-refresh-week-status)
+      (switch-to-buffer dailies-buf)
+      (goto-char position)
+      (org-fold-show-entry)
+      (recenter 1)
+      (message "Dailies entry for %s" today))))
 
 (defun reomacs/dailies--next-workday (from-time)
   "Return the next weekday after FROM-TIME."

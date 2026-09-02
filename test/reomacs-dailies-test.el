@@ -168,6 +168,39 @@
       (should-not (string-match-p "\\*\\* TODO <2099-01-02 Fri>"
                                   (buffer-string))))))
 
+(ert-deftest reomacs-dailies-goto-today-jumps-to-existing-entry ()
+  (let ((stamp (format-time-string "<%Y-%m-%d %a>"))
+        (today (format-time-string "%Y-%m-%d")))
+    (reomacs-dailies-test--with-org
+        (concat "* Week 2026-W36\n"
+                "** TODO " stamp "\n+ Morning\n"
+                "** TODO <2099-01-04 Thu>\n+ Later\n")
+      (let ((buffer (current-buffer)))
+        (cl-letf (((symbol-function 'reomacs/dailies--buffer)
+                   (lambda () buffer))
+                  ((symbol-function 'switch-to-buffer) #'ignore)
+                  ((symbol-function 'recenter) #'ignore))
+          (reomacs/dailies-goto-today))
+        (should (equal (reomacs/dailies--date-at-heading) today))
+        (should (= (how-many "^\\*\\* TODO" (point-min) (point-max))
+                   2))))))
+
+(ert-deftest reomacs-dailies-goto-today-creates-missing-entry-in-order ()
+  (reomacs-dailies-test--with-org
+      (concat "* Week 2099-W01\n"
+              "** DONE <2099-01-01 Thu>\n+ Old\n"
+              "** DONE <2099-01-05 Mon>\n+ Future\n")
+    (let ((buffer (current-buffer))
+          (today (format-time-string "%Y-%m-%d")))
+      (cl-letf (((symbol-function 'reomacs/dailies--buffer)
+                 (lambda () buffer))
+                ((symbol-function 'switch-to-buffer) #'ignore)
+                ((symbol-function 'recenter) #'ignore))
+        (reomacs/dailies-goto-today))
+      (should (equal (reomacs/dailies--date-at-heading) today))
+      (should (< (reomacs/dailies--find-date-heading today)
+                 (reomacs/dailies--find-date-heading "2099-01-01"))))))
+
 (ert-deftest reomacs-dailies-copies-clean-markdown-with-optional-durations ()
   (reomacs-dailies-test--with-org
       (concat "* Week 2026-W36\n"
