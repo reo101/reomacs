@@ -233,6 +233,26 @@
                (buffer-string)))
       (should-not (string-match-p "\\*\\*\\* " (buffer-string))))))
 
+(ert-deftest reomacs-dailies-meta-return-inserts-compact-headings ()
+  (reomacs-dailies-test--with-org
+      (concat "* Week 2026-W36\n\n"
+              "** TODO <2026-08-31 Mon>\n\n"
+              "*** TODO First {1h}\n")
+    (cl-letf (((symbol-function 'reomacs/dailies--buffer-p)
+               (lambda (&optional _) t)))
+      (reomacs/dailies--configure-week-status)
+      (goto-char (point-max))
+      (org-meta-return)
+      (insert "Second")
+      (should (string-match-p
+               "First {1h}\n\\*\\*\\* Second"
+               (buffer-string)))))
+  ;; Non-dailies teardown restores default separation behavior
+  (reomacs-dailies-test--with-org "* Heading\n"
+    (reomacs/dailies--configure-week-status)
+    (should (equal org-blank-before-new-entry
+                   '((heading . auto) (plain-list-item . auto))))))
+
 (ert-deftest reomacs-dailies-copies-clean-markdown-with-optional-durations ()
   (reomacs-dailies-test--with-org
       (concat "* Week 2026-W36\n"

@@ -1884,6 +1884,8 @@ keywords keep their own highlighting."
            (reomacs/dailies--buffer-p))
       (progn
         (reomacs/dailies--style-task-headings)
+        (setq-local org-blank-before-new-entry
+                    '((heading . nil) (plain-list-item . nil)))
         (add-hook 'before-change-functions
                   #'reomacs/dailies--capture-text-before-change nil t)
         (add-hook 'after-change-functions
@@ -1903,6 +1905,7 @@ keywords keep their own highlighting."
           reomacs/dailies--duration-overlays nil
           reomacs/dailies--revealed-duration-overlay nil
           reomacs/dailies--text-before-change nil)
+    (kill-local-variable 'org-blank-before-new-entry)
     (when reomacs/dailies--level3-face-remap
       (face-remap-remove-relative reomacs/dailies--level3-face-remap)
       (setq reomacs/dailies--level3-face-remap nil))))
