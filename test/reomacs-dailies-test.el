@@ -27,6 +27,8 @@
               "+ Two {45m @13:00}\n"
               "+ Three {1.5h✓}\n"
               "+ Estimate {1h}, actual {2h}\n"
+              "+ Empty {}\n"
+              "+ Invalid time {30m @99:99}\n"
               "+ No duration\n")
     (should (= (reomacs/dailies--sum-duration-minutes
                 (point-min) (point-max))
@@ -37,6 +39,8 @@
       (concat "+ One {2h}\n"
               "+ Two {45m @13:00}\n"
               "+ Three {1.5h✓}\n"
+              "+ Empty {}\n"
+              "+ Invalid time {30m @99:99}\n"
               "Not a task {9h}\n")
     (set-buffer-modified-p nil)
     (reomacs/dailies-refresh-week-status)
@@ -106,6 +110,30 @@
       (should (member " — 2/8h" texts))
       (should (member " — 8.5/40h" texts)))))
 
+(ert-deftest reomacs-dailies-only-dirties-hours-for-relevant-edits ()
+  (reomacs-dailies-test--with-org
+      "** TODO <2026-08-31 Mon>\n+ Ordinary task\n"
+    (search-forward "Ordinary")
+    (let ((beg (point)))
+      (reomacs/dailies--capture-text-before-change beg beg)
+      (insert " text")
+      (reomacs/dailies--mark-hours-status-dirty beg (point) 0)
+      (should-not reomacs/dailies--hours-status-dirty))
+    (end-of-line)
+    (let ((beg (point)))
+      (reomacs/dailies--capture-text-before-change beg beg)
+      (insert " {1h}")
+      (reomacs/dailies--mark-hours-status-dirty beg (point) 0)
+      (should reomacs/dailies--hours-status-dirty))
+    (setq reomacs/dailies--hours-status-dirty nil)
+    (goto-char (point-min))
+    (let ((beg (point))
+          (end (line-end-position)))
+      (reomacs/dailies--capture-text-before-change beg end)
+      (delete-region beg end)
+      (reomacs/dailies--mark-hours-status-dirty beg beg (- end beg))
+      (should reomacs/dailies--hours-status-dirty))))
+
 (ert-deftest reomacs-dailies-creates-flat-next-workday ()
   (reomacs-dailies-test--with-org
       "* Week 2099-W01\n** DONE <2099-01-01 Thu>\n+ Existing {8h}\n"
@@ -122,6 +150,23 @@
                "\\*\\* TODO <2099-01-02 Fri>\n\n\\+ \n\\'"
                (buffer-string)))
       (should-not (string-match-p "\\*\\*\\* Today" (buffer-string))))))
+
+(ert-deftest reomacs-dailies-new-day-uses-greatest-date-not-file-order ()
+  (reomacs-dailies-test--with-org
+      (concat "* Week 2099-W01\n"
+              "** DONE <2099-01-02 Fri>\n+ Later\n"
+              "** DONE <2099-01-01 Thu>\n+ Earlier\n")
+    (let ((buffer (current-buffer)))
+      (cl-letf (((symbol-function 'reomacs/dailies--buffer)
+                 (lambda () buffer))
+                ((symbol-function 'reomacs/dailies-refresh-week-status)
+                 #'ignore)
+                ((symbol-function 'switch-to-buffer) #'ignore))
+        (reomacs/dailies-new-day))
+      (should (string-match-p "\\*\\* TODO <2099-01-05 Mon>"
+                              (buffer-string)))
+      (should-not (string-match-p "\\*\\* TODO <2099-01-02 Fri>"
+                                  (buffer-string))))))
 
 (ert-deftest reomacs-dailies-copies-clean-markdown-with-optional-durations ()
   (reomacs-dailies-test--with-org
@@ -185,6 +230,30 @@
                  "2026-03-30"))
   (should-error (reomacs/dailies--date-add-days "2026-02-30" 1)))
 
+(ert-deftest reomacs-dailies-scans-every-azure-pr-open-on-target-day ()
+  (let ((open-pr '((creationDate . "2026-08-01T08:00:00Z")
+                   (closedDate . "2026-09-01T08:00:00Z")
+                   (createdBy . ((uniqueName . "someone-else")))
+                   (reviewers . []))))
+    (should (reomacs/dailies--az-review-candidate-p
+             open-pr "me" "2026-08-31"))
+    (should-not
+     (reomacs/dailies--az-review-candidate-p
+      '((creationDate . "2026-09-01T08:00:00Z")
+        (createdBy . ((uniqueName . "someone-else"))))
+      "me" "2026-08-31"))
+    (should-not
+     (reomacs/dailies--az-review-candidate-p
+      '((creationDate . "2026-08-01T08:00:00Z")
+        (closedDate . "2026-08-30T08:00:00Z")
+        (createdBy . ((uniqueName . "someone-else"))))
+      "me" "2026-08-31"))
+    (should-not
+     (reomacs/dailies--az-review-candidate-p
+      '((creationDate . "2026-08-01T08:00:00Z")
+        (createdBy . ((uniqueName . "me"))))
+      "me" "2026-08-31"))))
+
 (ert-deftest reomacs-dailies-prioritizes-recent-local-references ()
   (reomacs-dailies-test--with-org
       (concat
@@ -202,6 +271,26 @@
               (reomacs/dailies--recent-reference-candidates
                '((:forge azure :project "plcs" :repository "repo"))))
       '("Recent  New Azure" "Recent  Old Azure")))))
+
+(ert-deftest reomacs-dailies-caches-local-reference-index-until-text-changes ()
+  (reomacs-dailies-test--with-org
+      (concat "* Week 2026-W36\n"
+              "** TODO <2026-08-31 Mon>\n"
+              "+ [[https://github.com/owner/repo/issues/1][One]]\n"
+              "** TODO <2026-09-01 Tue>\n"
+              "+ [[https://github.com/owner/repo/issues/2][Two]]\n")
+    (search-forward "<2026-08-31")
+    (org-back-to-heading)
+    (org-narrow-to-subtree)
+    (let ((first (reomacs/dailies--local-reference-index)))
+      (should (= (length first) 2))
+      (should (eq first (reomacs/dailies--local-reference-index)))
+      (widen)
+      (goto-char (point-max))
+      (insert "+ [[https://github.com/owner/repo/issues/3][Three]]\n")
+      (let ((second (reomacs/dailies--local-reference-index)))
+        (should-not (eq first second))
+        (should (= (length second) 3))))))
 
 (ert-deftest reomacs-dailies-builds-reference-candidates-and-requests ()
   (let* ((reomacs/dailies-azure-org "https://dev.azure.com/org")
@@ -321,20 +410,59 @@
          (remote (list (list :url "remote" :display "Remote result"
                              :updated "2026-08-31T10:00:00Z")))
          (state (list :local local :remote nil :candidates local
-                      :errors nil :remaining 1 :processes nil
-                      :minibuffer nil :closed nil))
+                      :errors nil :pool nil :minibuffer nil :closed nil))
          (table (reomacs/dailies--ordered-completion-table state)))
     (should (equal (all-completions "" table) '("Recent local")))
     (cl-letf (((symbol-function 'run-at-time) #'ignore))
-      (reomacs/dailies--finish-reference-request state remote nil))
-    (should (zerop (plist-get state :remaining)))
+      (reomacs/dailies--update-reference-state state remote nil))
     (should (equal (all-completions "" table)
                    '("Recent local" "Remote result")))))
 
+(ert-deftest reomacs-dailies-request-pool-limits-concurrency ()
+  (let ((reomacs/dailies-process-concurrency 2)
+        pool callbacks
+        (idle-count 0)
+        errors)
+    (setq pool
+          (reomacs/dailies--make-request-pool
+           (lambda (command message)
+             (push (cons command message) errors))
+           (lambda () (setq idle-count (1+ idle-count)))))
+    (cl-letf (((symbol-function 'reomacs/dailies--run-process)
+               (lambda (command callback)
+                 (push (cons command callback) callbacks)
+                 (make-symbol "process"))))
+      (puthash :holding t pool)
+      (dotimes (index 5)
+        (reomacs/dailies--request-pool-submit
+         pool (list (number-to-string index)) #'ignore))
+      (puthash :holding nil pool)
+      (reomacs/dailies--request-pool-pump pool)
+      (should (= (gethash :active pool) 2))
+      (should (= (gethash :pending pool) 5))
+      (while (> (gethash :pending pool) 0)
+        (let ((request (pop callbacks)))
+          (should request)
+          (funcall (cdr request) "" nil)
+          (should (<= (gethash :active pool) 2))))
+      (should (zerop (gethash :active pool)))
+      (should (gethash :finished pool))
+      (should (= idle-count 1))
+      (should-not errors))))
+
+(ert-deftest reomacs-dailies-request-pool-cancels-running-processes ()
+  (let ((pool (reomacs/dailies--make-request-pool #'ignore #'ignore)))
+    (reomacs/dailies--request-pool-submit pool '("sleep" "10") #'ignore)
+    (let ((process (car (gethash :processes pool))))
+      (should (process-live-p process))
+      (reomacs/dailies--request-pool-close pool)
+      (accept-process-output process 0.1)
+      (should-not (process-live-p process))
+      (should (gethash :closed pool)))))
+
 (ert-deftest reomacs-dailies-reference-fetch-runs-followups ()
   (let ((state (list :local nil :remote nil :candidates nil
-                     :errors nil :remaining 0 :processes nil
-                     :minibuffer nil :closed nil))
+                     :errors nil :pool nil :minibuffer nil :closed nil))
         callbacks)
     (cl-letf (((symbol-function 'reomacs/dailies--run-process)
                (lambda (command callback)
@@ -354,11 +482,11 @@
                        (lambda (_)
                          (list (list :url "child" :display "Child"))))))))
        state)
-      (should (= (plist-get state :remaining) 1))
+      (should (= (gethash :pending (plist-get state :pool)) 1))
       (funcall (cdr (assoc '("parent") callbacks)) "parent" nil)
-      (should (= (plist-get state :remaining) 1))
+      (should (= (gethash :pending (plist-get state :pool)) 1))
       (funcall (cdr (assoc '("child") callbacks)) "child" nil)
-      (should (zerop (plist-get state :remaining)))
+      (should (zerop (gethash :pending (plist-get state :pool))))
       (should (equal (mapcar (lambda (candidate)
                               (plist-get candidate :display))
                             (plist-get state :candidates))
@@ -371,7 +499,7 @@
           exhibited)
       (set (make-local-variable 'vertico--input) '("typed" . 5))
       (setq state (list :minibuffer buffer :closed nil
-                        :remaining 1 :candidates '((:display "Recent"))))
+                        :pool nil :candidates '((:display "Recent"))))
       (cl-letf (((symbol-function 'active-minibuffer-window)
                  (lambda () 'window))
                 ((symbol-function 'window-buffer)
@@ -433,21 +561,54 @@
     (should (= calls 2))
     (should (member "500" (car commands)))))
 
-(defun reomacs-dailies-test--wait-for-process (process)
-  "Wait for PROCESS and its sentinel to finish."
-  (while (process-live-p process)
-    (accept-process-output process 0.1))
+(ert-deftest reomacs-dailies-paginates-azure-projects ()
+  (let ((calls 0)
+        commands
+        (page
+         (json-encode
+          (list (cons 'value (make-list 500 '((name . "project"))))))))
+    (cl-letf (((symbol-function 'reomacs/dailies--fetch-azure-pr-page)
+               #'ignore))
+      (reomacs/dailies--fetch-azure-project-page
+       (list :azure-org "https://dev.azure.com/org"
+             :fetch (lambda (command callback)
+                      (push command commands)
+                      (setq calls (1+ calls))
+                      (funcall callback (if (= calls 1) page "{\"value\":[]}"))))
+       0))
+    (should (= calls 2))
+    (should (member "500" (car commands)))))
+
+(ert-deftest reomacs-dailies-paginates-azure-reference-prs ()
+  (let* ((request
+          (reomacs/dailies--azure-pr-reference-request
+           "https://dev.azure.com/org" "project" "repo" nil "me"))
+         (page
+          (json-encode
+           (make-list
+            100 '((pullRequestId . 1)
+                  (createdBy . ((uniqueName . "someone-else")))
+                  (reviewers . [])))))
+         (followups (funcall (plist-get request :followups) page)))
+    (should (= (length followups) 1))
+    (should (equal (cadr (member "--skip"
+                                 (plist-get (car followups) :command)))
+                   "100"))))
+
+(defun reomacs-dailies-test--wait-for-pool (pool)
+  "Wait for every request in POOL to finish."
+  (while (> (gethash :pending pool) 0)
+    (accept-process-output nil 0.1))
   (accept-process-output nil 0.05))
 
 (ert-deftest reomacs-dailies-process-failure-finalizes-placeholder ()
   (reomacs-dailies-test--with-org
       (concat "+ " reomacs/dailies--placeholder "\n")
     (let* ((marker (copy-marker (point-min) t))
-           (runner (reomacs/dailies--make-runner "2026-08-31" marker))
-           (process (funcall (plist-get runner :fetch)
-                             '("false") #'ignore)))
-      (reomacs-dailies-test--wait-for-process process)
-      (should (zerop (gethash :pending (plist-get runner :state))))
+           (runner (reomacs/dailies--make-runner "2026-08-31" marker)))
+      (funcall (plist-get runner :fetch) '("false") #'ignore)
+      (reomacs-dailies-test--wait-for-pool (plist-get runner :pool))
+      (should (zerop (gethash :pending (plist-get runner :pool))))
       (should-not (marker-buffer marker))
       (should (string-match-p
                "^\\+ ERROR: github interactions, 1 request failed$"
@@ -457,12 +618,11 @@
   (reomacs-dailies-test--with-org
       (concat "+ " reomacs/dailies--placeholder "\n")
     (let* ((marker (copy-marker (point-min) t))
-           (runner (reomacs/dailies--make-runner "2026-08-31" marker))
-           (process
-            (funcall (plist-get runner :fetch) '("printf" "{")
-                     #'reomacs/dailies--json)))
-      (reomacs-dailies-test--wait-for-process process)
-      (should (zerop (gethash :pending (plist-get runner :state))))
+           (runner (reomacs/dailies--make-runner "2026-08-31" marker)))
+      (funcall (plist-get runner :fetch) '("printf" "{")
+               #'reomacs/dailies--json)
+      (reomacs-dailies-test--wait-for-pool (plist-get runner :pool))
+      (should (zerop (gethash :pending (plist-get runner :pool))))
       (should-not (marker-buffer marker))
       (should (string-match-p "^\\+ ERROR:" (buffer-string))))))
 

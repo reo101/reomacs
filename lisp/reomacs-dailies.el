@@ -7,6 +7,11 @@
 
 ;; Maintain flat Org work dailies, fetch forge interactions, insert forge
 ;; references, display logged hours, and copy daily entries as Markdown.
+;;
+;; Configure per-journal settings (forge, project, aliases, targets) as
+;; file-local variables in the dailies file.  Emacs only honors a Local
+;; Variables block within the last 3000 characters of a file, so keep the
+;; block at the end of the journal.
 
 ;;; Code:
 
@@ -124,8 +129,12 @@ Return nil when point is not inside a level-two date subtree."
       (while (re-search-forward org-heading-regexp nil t)
         (goto-char (match-beginning 0))
         (when-let* ((date (reomacs/dailies--date-at-heading)))
-          (setq last-date-pos (point)
-                last-date-str date))
+          (when (or (null last-date-str)
+                    (string< last-date-str date)
+                    (and (string= last-date-str date)
+                         (> (point) last-date-pos)))
+            (setq last-date-pos (point)
+                  last-date-str date)))
         (forward-line 1))
       (unless last-date-pos
         (user-error "No date entries found in dailies file"))
@@ -268,15 +277,16 @@ outside of it where file-local values are not visible."
       (cdr match)
     repo-name))
 
+(defun reomacs/dailies--timestamp-date (iso-date &optional zone)
+  "Return ISO-DATE's calendar date in optional ZONE, or nil."
+  (when (and iso-date (not (string-prefix-p "0001-" iso-date)))
+    (condition-case nil
+        (format-time-string "%Y-%m-%d" (date-to-time iso-date) zone)
+      (error nil))))
+
 (defun reomacs/dailies--date-on-day-p (iso-date target-date &optional zone)
   "Return non-nil when ISO-DATE falls on TARGET-DATE in optional ZONE."
-  (and iso-date
-       (not (string-prefix-p "0001-" iso-date))
-       (condition-case nil
-           (string= target-date
-                    (format-time-string "%Y-%m-%d"
-                                        (date-to-time iso-date) zone))
-         (error nil))))
+  (equal target-date (reomacs/dailies--timestamp-date iso-date zone)))
 
 (defvar reomacs/dailies--username-commands
   '((github . ("gh" "api" "user" "--jq" ".login"))
@@ -347,6 +357,112 @@ ERROR is nil after a successful exit and a diagnostic string otherwise."
     (ignore-errors (process-send-eof process))
     process))
 
+(defcustom reomacs/dailies-process-concurrency 8
+  "Maximum simultaneous external dailies processes."
+  :type 'integer
+  :group 'reo101)
+
+(defun reomacs/dailies--make-request-pool (on-error on-idle)
+  "Create a concurrency-limited request pool.
+Call ON-ERROR with command and diagnostic; call ON-IDLE after all work ends."
+  (let ((pool (make-hash-table :test 'eq)))
+    (puthash :limit (max 1 reomacs/dailies-process-concurrency) pool)
+    (puthash :active 0 pool)
+    (puthash :pending 0 pool)
+    (puthash :queue nil pool)
+    (puthash :processes nil pool)
+    (puthash :holding nil pool)
+    (puthash :closed nil pool)
+    (puthash :finished nil pool)
+    (puthash :on-error on-error pool)
+    (puthash :on-idle on-idle pool)
+    pool))
+
+(defun reomacs/dailies--request-pool-report-error (pool command message)
+  "Report MESSAGE for COMMAND through POOL's error callback."
+  (condition-case err
+      (funcall (gethash :on-error pool) command message)
+    (error
+     (message "Dailies request error handler failed: %s"
+              (error-message-string err)))))
+
+(defun reomacs/dailies--request-pool-maybe-finish (pool)
+  "Finalize POOL once no queued or active work remains."
+  (when (and (not (gethash :closed pool))
+             (not (gethash :holding pool))
+             (not (gethash :finished pool))
+             (zerop (gethash :pending pool))
+             (zerop (gethash :active pool))
+             (null (gethash :queue pool)))
+    (puthash :finished t pool)
+    (condition-case err
+        (funcall (gethash :on-idle pool))
+      (error
+       (message "Dailies request finalizer failed: %s"
+                (error-message-string err))))))
+
+(defun reomacs/dailies--request-pool-complete (pool request output process-error)
+  "Complete REQUEST in POOL with OUTPUT or PROCESS-ERROR."
+  (unless (gethash :closed pool)
+    (unwind-protect
+        (if process-error
+            (reomacs/dailies--request-pool-report-error
+             pool (plist-get request :command) process-error)
+          (condition-case err
+              (funcall (plist-get request :callback) output)
+            (error
+             (reomacs/dailies--request-pool-report-error
+              pool (plist-get request :command) (error-message-string err)))
+            (quit
+             (reomacs/dailies--request-pool-report-error
+              pool (plist-get request :command) "callback quit"))))
+      (puthash :active (1- (gethash :active pool)) pool)
+      (puthash :pending (1- (gethash :pending pool)) pool)
+      (reomacs/dailies--request-pool-pump pool)
+      (reomacs/dailies--request-pool-maybe-finish pool))))
+
+(defun reomacs/dailies--request-pool-pump (pool)
+  "Start queued requests in POOL up to its concurrency limit."
+  (while (and (not (gethash :closed pool))
+              (not (gethash :holding pool))
+              (gethash :queue pool)
+              (< (gethash :active pool) (gethash :limit pool)))
+    (let* ((request (pop (gethash :queue pool)))
+           (command (plist-get request :command)))
+      (puthash :active (1+ (gethash :active pool)) pool)
+      (condition-case err
+          (let ((process
+                 (reomacs/dailies--run-process
+                  command
+                  (lambda (output process-error)
+                    (reomacs/dailies--request-pool-complete
+                     pool request output process-error)))))
+            (puthash :processes
+                     (cons process (gethash :processes pool)) pool))
+        (error
+         (reomacs/dailies--request-pool-complete
+          pool request "" (error-message-string err)))))))
+
+(defun reomacs/dailies--request-pool-submit (pool command callback)
+  "Submit COMMAND and successful CALLBACK to POOL."
+  (when (or (gethash :closed pool) (gethash :finished pool))
+    (error "Cannot submit to a finished dailies request pool"))
+  (puthash :pending (1+ (gethash :pending pool)) pool)
+  (puthash :queue
+           (cons (list :command command :callback callback)
+                 (gethash :queue pool))
+           pool)
+  (unless (gethash :holding pool)
+    (reomacs/dailies--request-pool-pump pool)))
+
+(defun reomacs/dailies--request-pool-close (pool)
+  "Cancel queued and running work in POOL."
+  (puthash :closed t pool)
+  (puthash :queue nil pool)
+  (dolist (process (gethash :processes pool))
+    (when (process-live-p process)
+      (delete-process process))))
+
 (defun reomacs/dailies--runner-record-error (state command message)
   "Record MESSAGE for COMMAND in runner STATE."
   (let ((diagnostic (format "%s: %s" (string-join command " ") message)))
@@ -391,55 +507,28 @@ ERROR is nil after a successful exit and a diagnostic string otherwise."
                      "complete"))
     (when marker (set-marker marker nil))))
 
-(defun reomacs/dailies--runner-finish (state)
-  "Finish one request in runner STATE."
-  (let ((pending (1- (gethash :pending state))))
-    (puthash :pending pending state)
-    (when (zerop pending)
-      (reomacs/dailies--runner-finalize state))))
-
-(defun reomacs/dailies--runner-fetch (state command callback)
-  "Run COMMAND for STATE and invoke successful CALLBACK with its output."
-  (puthash :pending (1+ (gethash :pending state)) state)
-  (condition-case err
-      (reomacs/dailies--run-process
-       command
-       (lambda (output process-error)
-         (unwind-protect
-             (if process-error
-                 (reomacs/dailies--runner-record-error
-                  state command process-error)
-               (condition-case callback-error
-                   (funcall callback output)
-                 (error
-                  (reomacs/dailies--runner-record-error
-                   state command (error-message-string callback-error)))
-                 (quit
-                  (reomacs/dailies--runner-record-error
-                   state command "callback quit"))))
-           (reomacs/dailies--runner-finish state))))
-    (error
-     (reomacs/dailies--runner-record-error
-      state command (error-message-string err))
-     (reomacs/dailies--runner-finish state)
-     nil)))
-
 (defun reomacs/dailies--make-runner (date marker)
   "Create an asynchronous interactions runner for DATE at MARKER."
-  (let ((state (make-hash-table :test 'eq)))
-    (puthash :pending 0 state)
+  (let ((state (make-hash-table :test 'eq)) pool)
     (puthash :marker marker state)
     (puthash :forge reomacs/dailies-forge state)
     (puthash :errors nil state)
     (puthash :results nil state)
+    (setq pool
+          (reomacs/dailies--make-request-pool
+           (lambda (command message)
+             (reomacs/dailies--runner-record-error state command message))
+           (lambda () (reomacs/dailies--runner-finalize state))))
     (list :date date
           :forge reomacs/dailies-forge
           :aliases reomacs/dailies-repo-aliases
           :azure-org reomacs/dailies-azure-org
           :username nil
           :state state
+          :pool pool
           :fetch (lambda (command callback)
-                   (reomacs/dailies--runner-fetch state command callback))
+                   (reomacs/dailies--request-pool-submit
+                    pool command callback))
           :emit (lambda (line)
                   (puthash :results
                            (cons line (gethash :results state)) state)))))
@@ -656,22 +745,23 @@ Push history remains limited to GitHub's retained Events API window."
   (and (stringp left) (stringp right)
        (string-equal-ignore-case left right)))
 
+(defun reomacs/dailies--az-pr-open-on-day-p (pr date)
+  "Return non-nil when Azure PR existed and was open during DATE."
+  (let ((created (reomacs/dailies--timestamp-date
+                  (alist-get 'creationDate pr)))
+        (closed (reomacs/dailies--timestamp-date
+                 (alist-get 'closedDate pr))))
+    (and created
+         (not (string< date created))
+         (or (null closed) (not (string< closed date))))))
+
 (defun reomacs/dailies--az-review-candidate-p (pr username date)
-  "Return non-nil when PR merits the bounded Azure thread scan.
-The Azure CLI cannot query comments by author and date.  To avoid an
-organization-wide request per historical PR, scan PRs where USERNAME
-is currently assigned or whose lifecycle changed on DATE."
-  (let ((creator (alist-get 'uniqueName (alist-get 'createdBy pr))))
-    (and (not (reomacs/dailies--identity-equal-p username creator))
-         (or (seq-some
-              (lambda (reviewer)
-                (reomacs/dailies--identity-equal-p
-                 username (alist-get 'uniqueName reviewer)))
-              (alist-get 'reviewers pr))
-             (reomacs/dailies--date-on-day-p
-              (alist-get 'creationDate pr) date)
-             (reomacs/dailies--date-on-day-p
-              (alist-get 'closedDate pr) date)))))
+  "Return non-nil when PR may contain a USERNAME review on DATE.
+Azure cannot query comments by author or date, so every PR open during
+DATE must have its discussion threads inspected for complete discovery."
+  (and (not (reomacs/dailies--identity-equal-p
+             username (alist-get 'uniqueName (alist-get 'createdBy pr))))
+       (reomacs/dailies--az-pr-open-on-day-p pr date)))
 
 (defun reomacs/dailies--process-az-prs (runner prs)
   "Emit events for Azure DevOps PR alists PRS using RUNNER."
@@ -745,23 +835,27 @@ is currently assigned or whose lifecycle changed on DATE."
            (reomacs/dailies--fetch-azure-pr-page
             runner project (+ skip 500))))))))
 
-(defun reomacs/dailies--run-azure-fetch (runner)
-  "Start bounded Azure DevOps interaction requests using RUNNER.
-Pushes have no queryable Azure feed and are not fetched."
+(defun reomacs/dailies--fetch-azure-project-page (runner skip)
+  "Fetch one 500-project Azure page for RUNNER starting at SKIP."
   (let ((fetch (plist-get runner :fetch))
         (org (plist-get runner :azure-org)))
     (funcall
      fetch
      (list "az" "devops" "project" "list" "--org" org
-           "--top" "1000" "-o" "json")
+           "--top" "500" "--skip" (number-to-string skip) "-o" "json")
      (lambda (output)
-       (let ((projects (alist-get 'value
-                                  (reomacs/dailies--json output))))
-         (when (= (length projects) 1000)
-           (error "Azure project list reached its 1000-project safety limit"))
+       (let ((projects (alist-get 'value (reomacs/dailies--json output))))
          (dolist (project projects)
            (reomacs/dailies--fetch-azure-pr-page
-            runner (alist-get 'name project) 0)))))))
+            runner (alist-get 'name project) 0))
+         (when (= (length projects) 500)
+           (reomacs/dailies--fetch-azure-project-page
+            runner (+ skip 500))))))))
+
+(defun reomacs/dailies--run-azure-fetch (runner)
+  "Start paginated Azure DevOps interaction requests using RUNNER.
+Pushes have no queryable Azure feed and are not fetched."
+  (reomacs/dailies--fetch-azure-project-page runner 0))
 
 (defun reomacs/dailies--run-forge-fetch (runner)
   "Dispatch RUNNER to its configured forge."
@@ -817,8 +911,8 @@ Pushes have no queryable Azure feed and are not fetched."
 Queries the forge configured by `reomacs/dailies-forge' and replaces a
 placeholder when requests finish.  DAYS-BACK nil uses the previous
 workday, while zero uses today.  GitHub push history is limited to its
-retained Events API window.  Azure review discovery covers currently
-assigned PRs and PRs whose lifecycle changed on the requested date."
+retained Events API window.  Azure review discovery checks every PR
+that was open on the requested date with concurrency-limited thread scans."
   (interactive
    (list
     (let ((input
@@ -897,40 +991,63 @@ assigned PRs and PRs whose lifecycle changed on the requested date."
              (null actual)
              (string-equal-ignore-case selected actual)))))
 
+(defvar-local reomacs/dailies--reference-index nil
+  "Cached local forge references in the current dailies buffer.")
+
+(defvar-local reomacs/dailies--reference-index-tick nil
+  "Buffer modification tick corresponding to the local reference index.")
+
+(defun reomacs/dailies--local-reference-index ()
+  "Return local forge references, rebuilding the buffer cache when stale."
+  (let ((tick (buffer-chars-modified-tick)))
+    (unless (eql tick reomacs/dailies--reference-index-tick)
+      (save-restriction
+        (widen)
+        (let (candidates)
+          (org-element-map (org-element-parse-buffer) 'link
+            (lambda (link)
+              (let* ((url (org-element-property :raw-link link))
+                     (position (org-element-property :begin link)))
+                (when (and url
+                           (reomacs/dailies--reference-url-forge url)
+                           (save-excursion
+                             (goto-char position)
+                             (reomacs/dailies--goto-containing-date-heading)))
+                  (let* ((description
+                          (if-let* ((beg
+                                     (org-element-property :contents-begin link))
+                                    (end
+                                     (org-element-property :contents-end link)))
+                              (buffer-substring-no-properties beg end)
+                            url))
+                         (description
+                          (reomacs/dailies--reference-title description)))
+                    (push (list :url url
+                                :display (concat "Recent  " description)
+                                :link (org-link-make-string url description)
+                                :position position)
+                          candidates))))))
+          (setq reomacs/dailies--reference-index
+                (sort candidates
+                      (lambda (left right)
+                        (> (plist-get left :position)
+                           (plist-get right :position))))
+                reomacs/dailies--reference-index-tick tick))))
+    reomacs/dailies--reference-index))
+
 (defun reomacs/dailies--recent-reference-candidates (sources)
-  "Return up to 30 local reference candidates matching SOURCES.
-References in later date entries come first."
-  (let (candidates)
-    (org-element-map (org-element-parse-buffer) 'link
-      (lambda (link)
-        (let* ((url (org-element-property :raw-link link))
-               (position (org-element-property :begin link)))
-          (when (and url
-                     (seq-some
-                      (lambda (source)
-                        (reomacs/dailies--reference-matches-source-p
-                         url source))
-                      sources)
-                     (save-excursion
-                       (goto-char position)
-                       (reomacs/dailies--goto-containing-date-heading)))
-            (let* ((description
-                    (if-let* ((beg (org-element-property :contents-begin link))
-                              (end (org-element-property :contents-end link)))
-                        (buffer-substring-no-properties beg end)
-                      url))
-                   (description
-                    (reomacs/dailies--reference-title description)))
-              (push (list :url url
-                          :display (concat "Recent  " description)
-                          :link (org-link-make-string url description)
-                          :position position)
-                    candidates))))))
-    (seq-take
-     (sort candidates
-           (lambda (left right)
-             (> (plist-get left :position) (plist-get right :position))))
-     30)))
+  "Return up to 30 cached local reference candidates matching SOURCES."
+  (seq-take
+   (reomacs/dailies--deduplicate-reference-candidates
+    (seq-filter
+     (lambda (candidate)
+       (seq-some
+        (lambda (source)
+          (reomacs/dailies--reference-matches-source-p
+           (plist-get candidate :url) source))
+        sources))
+     (reomacs/dailies--local-reference-index)))
+   30))
 
 (defun reomacs/dailies--parse-github-reference-candidates (output aliases)
   "Parse GitHub reference candidates from OUTPUT using ALIASES."
@@ -1002,9 +1119,6 @@ References in later date entries come first."
                           (alist-get 'creationDate pr)))))
    (reomacs/dailies--json output)))
 
-(defconst reomacs/dailies--azure-linked-pr-limit 20
-  "Maximum participating PRs scanned for linked work-item references.")
-
 (defun reomacs/dailies--azure-pr-participant-p (pr username)
   "Return non-nil when USERNAME created or reviews Azure PR."
   (or (reomacs/dailies--identity-equal-p
@@ -1016,8 +1130,8 @@ References in later date entries come first."
        (alist-get 'reviewers pr))))
 
 (defun reomacs/dailies--azure-linked-work-item-requests
-    (output org project username)
-  "Build work-item requests from participating PRs in OUTPUT.
+    (prs org project username)
+  "Build work-item requests from participating PRS.
 ORG and PROJECT identify the Azure source; USERNAME identifies participation."
   (mapcar
    (lambda (pr)
@@ -1029,31 +1143,38 @@ ORG and PROJECT identify the Azure source; USERNAME identifies participation."
       (lambda (work-output)
         (reomacs/dailies--parse-azure-work-reference-candidates
          work-output org project))))
-   (seq-take
-    (seq-filter
-     (lambda (pr)
-       (reomacs/dailies--azure-pr-participant-p pr username))
-     (reomacs/dailies--json output))
-    reomacs/dailies--azure-linked-pr-limit)))
+   (seq-filter
+    (lambda (pr)
+      (reomacs/dailies--azure-pr-participant-p pr username))
+    prs)))
 
 (defun reomacs/dailies--azure-pr-reference-request
-    (org project repository aliases username)
-  "Build an Azure PR request for ORG and PROJECT.
-Limit it to REPOSITORY, use ALIASES for display, and find links for USERNAME."
-  (list
-   :command
-   (append (list "az" "repos" "pr" "list" "--org" org
-                 "--project" project)
-           (when repository (list "--repository" repository))
-           (list "--status" "all" "--top" "100" "-o" "json"))
-   :parser
-   (lambda (output)
-     (reomacs/dailies--parse-azure-pr-reference-candidates
-      output org aliases))
-   :followups
-   (lambda (output)
-     (reomacs/dailies--azure-linked-work-item-requests
-      output org project username))))
+    (org project repository aliases username &optional skip)
+  "Build a paginated Azure PR request for ORG and PROJECT.
+Limit it to REPOSITORY, use ALIASES for display, find links for USERNAME,
+and start at optional SKIP."
+  (let ((skip (or skip 0)))
+    (list
+     :command
+     (append (list "az" "repos" "pr" "list" "--org" org
+                   "--project" project)
+             (when repository (list "--repository" repository))
+             (list "--status" "all" "--top" "100"
+                   "--skip" (number-to-string skip) "-o" "json"))
+     :parser
+     (lambda (output)
+       (reomacs/dailies--parse-azure-pr-reference-candidates
+        output org aliases))
+     :followups
+     (lambda (output)
+       (let ((prs (reomacs/dailies--json output)))
+         (append
+          (reomacs/dailies--azure-linked-work-item-requests
+           prs org project username)
+          (when (= (length prs) 100)
+            (list
+             (reomacs/dailies--azure-pr-reference-request
+              org project repository aliases username (+ skip 100))))))))))
 
 (defun reomacs/dailies--reference-requests (sources)
   "Return remote reference requests for SOURCES."
@@ -1068,7 +1189,7 @@ Limit it to REPOSITORY, use ALIASES for display, and find links for USERNAME."
              (append
               (list "gh" "search" "issues" "--involves=@me" "--include-prs")
               (when repository (list (format "--repo=%s" repository)))
-              (list "--sort=updated" "--order=desc" "--limit=100" "--json"
+              (list "--sort=updated" "--order=desc" "--limit=1000" "--json"
                     (concat "number,repository,url,title,updatedAt,"
                             "isPullRequest,state")))
              :parser
@@ -1118,6 +1239,19 @@ Limit it to REPOSITORY, use ALIASES for display, and find links for USERNAME."
         (forge (error "Unknown dailies forge: %s" forge))))
     (nreverse requests)))
 
+(defun reomacs/dailies--invalidate-completion-ui ()
+  "Invalidate candidates in the active completion frontend."
+  ;; Vertico has no public push-refresh API.  Its own extensions call this
+  ;; internal entry point too, so confine the compatibility boundary here.
+  (cond
+   ((and (local-variable-p 'vertico--input)
+         (fboundp 'vertico--exhibit))
+    (set 'vertico--input nil)
+    (funcall (symbol-function 'vertico--exhibit)))
+   ((fboundp 'completion--flush-all-sorted-completions)
+    (completion--flush-all-sorted-completions))
+   (t (redisplay))))
+
 (defun reomacs/dailies--refresh-reference-minibuffer (state)
   "Refresh the active completion UI from reference STATE."
   (when-let* ((buffer (plist-get state :minibuffer))
@@ -1125,26 +1259,20 @@ Limit it to REPOSITORY, use ALIASES for display, and find links for USERNAME."
               (window (active-minibuffer-window))
               ((eq buffer (window-buffer window))))
     (with-current-buffer buffer
-      (if (and (local-variable-p 'vertico--input)
-               (fboundp 'vertico--exhibit))
-          (progn
-            (set 'vertico--input nil)
-            (funcall (symbol-function 'vertico--exhibit)))
-        (when (fboundp 'completion--flush-all-sorted-completions)
-          (completion--flush-all-sorted-completions)))
-      (when (and (zerop (plist-get state :remaining))
+      (reomacs/dailies--invalidate-completion-ui)
+      (when (and (when-let* ((pool (plist-get state :pool)))
+                   (gethash :finished pool))
                  (null (plist-get state :candidates)))
         (minibuffer-message "No references found; remote fetches failed")))))
 
-(defun reomacs/dailies--finish-reference-request (state candidates error)
-  "Add CANDIDATES or ERROR to reference STATE and refresh completion."
+(defun reomacs/dailies--update-reference-state (state candidates &optional error)
+  "Merge CANDIDATES or ERROR into reference STATE and refresh completion."
   (unless (plist-get state :closed)
     (when candidates
       (plist-put state :remote
                  (nconc candidates (plist-get state :remote))))
     (when error
       (plist-put state :errors (cons error (plist-get state :errors))))
-    (plist-put state :remaining (1- (plist-get state :remaining)))
     (let ((remote
            (sort (plist-get state :remote)
                  (lambda (left right)
@@ -1158,45 +1286,37 @@ Limit it to REPOSITORY, use ALIASES for display, and find links for USERNAME."
         (append (plist-get state :local) remote))))
     (run-at-time 0 nil #'reomacs/dailies--refresh-reference-minibuffer state)))
 
-(defun reomacs/dailies--start-reference-request (request state)
-  "Start one asynchronous REQUEST and stream its results into STATE."
-  (plist-put state :remaining (1+ (or (plist-get state :remaining) 0)))
-  (condition-case err
-      (let ((process
-             (reomacs/dailies--run-process
-              (plist-get request :command)
-              (lambda (output process-error)
-                (unless (plist-get state :closed)
-                  (if process-error
-                      (reomacs/dailies--finish-reference-request
-                       state nil process-error)
-                    (condition-case parse-error
-                        (let ((candidates
-                               (when-let* ((parser (plist-get request :parser)))
-                                 (funcall parser output)))
-                              (followups
-                               (when-let* ((builder
-                                            (plist-get request :followups)))
-                                 (funcall builder output))))
-                          (dolist (followup followups)
-                            (reomacs/dailies--start-reference-request
-                             followup state))
-                          (reomacs/dailies--finish-reference-request
-                           state candidates nil))
-                      (error
-                       (reomacs/dailies--finish-reference-request
-                        state nil (error-message-string parse-error))))))))))
-        (plist-put state :processes
-                   (cons process (plist-get state :processes))))
-    (error
-     (reomacs/dailies--finish-reference-request
-      state nil (error-message-string err)))))
+(defun reomacs/dailies--submit-reference-request (pool request state)
+  "Submit reference REQUEST to POOL and stream results into STATE."
+  (reomacs/dailies--request-pool-submit
+   pool (plist-get request :command)
+   (lambda (output)
+     (when-let* ((parser (plist-get request :parser)))
+       (reomacs/dailies--update-reference-state
+        state (funcall parser output)))
+     (when-let* ((builder (plist-get request :followups)))
+       (dolist (followup (funcall builder output))
+         (reomacs/dailies--submit-reference-request
+          pool followup state))))))
 
 (defun reomacs/dailies--start-reference-fetch (requests state)
   "Start asynchronous REQUESTS and stream their results into STATE."
-  (plist-put state :remaining 0)
-  (dolist (request requests)
-    (reomacs/dailies--start-reference-request request state)))
+  (let ((pool
+         (reomacs/dailies--make-request-pool
+          (lambda (command message)
+            (reomacs/dailies--update-reference-state
+             state nil (format "%s: %s" (string-join command " ") message)))
+          (lambda ()
+            (run-at-time
+             0 nil #'reomacs/dailies--refresh-reference-minibuffer state)))))
+    (plist-put state :pool pool)
+    (puthash :holding t pool)
+    (unwind-protect
+        (dolist (request requests)
+          (reomacs/dailies--submit-reference-request pool request state))
+      (puthash :holding nil pool)
+      (reomacs/dailies--request-pool-pump pool)
+      (reomacs/dailies--request-pool-maybe-finish pool))))
 
 (defun reomacs/dailies--azure-reference-source (project)
   "Return an Azure reference source for PROJECT."
@@ -1355,8 +1475,7 @@ recent historical involvement and items linked to authored or reviewed PRs."
          (local (reomacs/dailies--recent-reference-candidates sources))
          (requests (reomacs/dailies--reference-requests sources))
          (state (list :local local :remote nil :candidates local
-                      :errors nil :remaining 0 :processes nil
-                      :minibuffer nil :closed nil))
+                      :errors nil :pool nil :minibuffer nil :closed nil))
          choice)
     (unwind-protect
         (setq choice
@@ -1369,9 +1488,8 @@ recent historical involvement and items linked to authored or reviewed PRs."
                  (reomacs/dailies--ordered-completion-table state)
                  nil t nil 'reomacs/dailies-reference-history)))
       (plist-put state :closed t)
-      (dolist (process (plist-get state :processes))
-        (when (process-live-p process)
-          (delete-process process))))
+      (when-let* ((pool (plist-get state :pool)))
+        (reomacs/dailies--request-pool-close pool)))
     (dolist (error (nreverse (plist-get state :errors)))
       (message "Dailies reference fetch error: %s" error))
     (let ((candidate
@@ -1395,7 +1513,7 @@ recent historical involvement and items linked to authored or reviewed PRs."
   (concat "{\\s-*"
           "\\(?:\\([0-9]+\\(?:\\.[0-9]+\\)?\\)h\\)?\\s-*"
           "\\(?:\\([0-9]+\\)m\\)?\\s-*"
-          "\\(?:@\\([0-9]\\{1,2\\}:[0-9]\\{2\\}\\)\\)?\\s-*"
+          "\\(?:@\\(\\(?:[01]?[0-9]\\|2[0-3]\\):[0-5][0-9]\\)\\)?\\s-*"
           "\\(✓\\)?}")
   "Match a dailies duration, with capture groups for hours and minutes.")
 
@@ -1418,7 +1536,8 @@ Submitted markers still count toward logged work."
         (let ((line (buffer-substring-no-properties
                      (line-beginning-position) (line-end-position))))
           (when (and (string-match "^[ \t]*\\+[ \t]+" line)
-                     (string-match reomacs/dailies--trailing-duration-re line))
+                     (string-match reomacs/dailies--trailing-duration-re line)
+                     (or (match-string 1 line) (match-string 2 line)))
             (setq total
                   (+ total
                      (reomacs/dailies--parse-duration
@@ -1506,10 +1625,11 @@ Submitted markers still count toward logged work."
               (complete (match-string-no-properties 4))
               (source (string-trim
                        (match-string-no-properties 0))))
-          (when (save-excursion
-                  (goto-char beg)
-                  (beginning-of-line)
-                  (looking-at-p "[ \t]*\\+[ \t]+"))
+          (when (and (or hours minutes)
+                     (save-excursion
+                       (goto-char beg)
+                       (beginning-of-line)
+                       (looking-at-p "[ \t]*\\+[ \t]+")))
             (let* ((display (reomacs/dailies--duration-chip
                              hours minutes start complete))
                    (overlay (make-overlay beg end)))
@@ -1526,9 +1646,31 @@ Submitted markers still count toward logged work."
 (defvar-local reomacs/dailies--hours-status-dirty nil
   "Non-nil when hour overlays need refreshing after the current command.")
 
-(defun reomacs/dailies--mark-hours-status-dirty (&rest _)
-  "Mark dynamic hour displays stale without parsing during a text edit."
-  (setq reomacs/dailies--hours-status-dirty t))
+(defvar-local reomacs/dailies--text-before-change nil
+  "Text captured before a possible duration or heading change.")
+
+(defun reomacs/dailies--capture-text-before-change (beg end)
+  "Capture text between BEG and END before a dailies edit."
+  (setq reomacs/dailies--text-before-change
+        (buffer-substring-no-properties beg end)))
+
+(defun reomacs/dailies--mark-hours-status-dirty (beg end _old-length)
+  "Mark hour displays stale when the change from BEG to END affects them."
+  (let* ((context
+          (save-excursion
+            (goto-char beg)
+            (let ((line-beg (line-beginning-position)))
+              (goto-char end)
+              (buffer-substring-no-properties
+               line-beg (line-end-position)))))
+         (before (or reomacs/dailies--text-before-change ""))
+         (heading-re "\\(?:\\`\\|\n\\)[ \t]*\\*+ "))
+    (when (or (string-match-p "[{}\n]" before)
+              (string-match-p "[{}\n]" context)
+              (string-match-p heading-re before)
+              (string-match-p heading-re context))
+      (setq reomacs/dailies--hours-status-dirty t))
+    (setq reomacs/dailies--text-before-change nil)))
 
 (defun reomacs/dailies--refresh-hours-status-if-dirty ()
   "Refresh stale hour displays and reveal the duration under point."
@@ -1614,11 +1756,15 @@ COMPLETE controls the checkmark independently of the hour count."
   (if (and (derived-mode-p 'org-mode)
            (reomacs/dailies--buffer-p))
       (progn
+        (add-hook 'before-change-functions
+                  #'reomacs/dailies--capture-text-before-change nil t)
         (add-hook 'after-change-functions
                   #'reomacs/dailies--mark-hours-status-dirty nil t)
         (add-hook 'post-command-hook
                   #'reomacs/dailies--refresh-hours-status-if-dirty nil t)
         (reomacs/dailies-refresh-week-status))
+    (remove-hook 'before-change-functions
+                 #'reomacs/dailies--capture-text-before-change t)
     (remove-hook 'after-change-functions
                  #'reomacs/dailies--mark-hours-status-dirty t)
     (remove-hook 'post-command-hook
@@ -1627,7 +1773,8 @@ COMPLETE controls the checkmark independently of the hour count."
     (mapc #'delete-overlay reomacs/dailies--duration-overlays)
     (setq reomacs/dailies--week-status-overlays nil
           reomacs/dailies--duration-overlays nil
-          reomacs/dailies--revealed-duration-overlay nil)))
+          reomacs/dailies--revealed-duration-overlay nil
+          reomacs/dailies--text-before-change nil)))
 
 (add-hook 'hack-local-variables-hook #'reomacs/dailies--configure-week-status)
 
