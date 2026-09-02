@@ -2374,6 +2374,19 @@ reconnection prompts every time eshell starts.
 
 #+end_src
 
+** Confluence
+
+#+begin_src emacs-lisp
+  (use-package confluence-reader
+    :straight (:host sourcehut :repo "sebasmonia/confluence-reader.el")
+    :commands (confluence-search
+               confluence-page-by-id
+               confluence-page-from-url)
+    :custom
+    (confluence-host "baringa.atlassian.net")
+    (confluence-buffer-name-style 'page-title))
+#+end_src
+
 ** Tex
 
 #+begin_src emacs-lisp
