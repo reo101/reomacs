@@ -3699,14 +3699,6 @@ Use this as a reference for creating custom highlighting rules.
                 (hass-dash-toggle :entity-id "light.ldv_smart_tube_t8"))
 
                (hass-dash-group
-                :title "Media"
-                :title-face outline-2
-                :format "\n%t\n\n%v"
-                (hass-dash-toggle :entity-id "media_player.samsung_tv")
-                (hass-dash-toggle :entity-id "media_player.chromecast")
-                (hass-dash-state  :entity-id "media_player.seerr_3"))
-
-               (hass-dash-group
                 :title "Phone (cheetah)"
                 :title-face outline-2
                 :format "\n%t\n\n%v"
