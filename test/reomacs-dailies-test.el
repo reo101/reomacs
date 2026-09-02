@@ -217,6 +217,22 @@
     (reomacs/dailies--configure-week-status)
     (should-not (assq 'org-level-3 face-remapping-alist))))
 
+(ert-deftest reomacs-dailies-new-day-respects-bullet-style ()
+  (reomacs-dailies-test--with-org
+      "* Week 2099-W01\n** DONE <2099-01-01 Thu>\n+ Existing {8h}\n"
+    (let ((buffer (current-buffer))
+          (reomacs/dailies-task-style 'bullet))
+      (cl-letf (((symbol-function 'reomacs/dailies--buffer)
+                 (lambda () buffer))
+                ((symbol-function 'reomacs/dailies-refresh-week-status)
+                 #'ignore)
+                ((symbol-function 'switch-to-buffer) #'ignore))
+        (reomacs/dailies-new-day))
+      (should (string-match-p
+               "\\*\\* TODO <2099-01-02 Fri>\n\n\\+ \n"
+               (buffer-string)))
+      (should-not (string-match-p "\\*\\*\\* " (buffer-string))))))
+
 (ert-deftest reomacs-dailies-copies-clean-markdown-with-optional-durations ()
   (reomacs-dailies-test--with-org
       (concat "* Week 2026-W36\n"
@@ -575,8 +591,25 @@
                              "{\"actor\":\"me\",\"event\":\"merged\"}")))
      (list pr))
     (should (equal (nreverse emitted)
-                   '("+ Create [[https://example.test/pr/1][~repo~ PR 1]]"
-                     "+ Merge [[https://example.test/pr/1][~repo~ PR 1]]")))))
+                   '("Create [[https://example.test/pr/1][~repo~ PR 1]]"
+                     "Merge [[https://example.test/pr/1][~repo~ PR 1]]")))))
+
+(ert-deftest reomacs-dailies-emit-uses-configured-task-prefix ()
+  (reomacs-dailies-test--with-org "+ Existing\n"
+    (let ((marker (copy-marker (point-min) t))
+          (reomacs/dailies-forge 'github))
+      (let ((bullet-runner
+             (let ((reomacs/dailies-task-style 'bullet))
+               (reomacs/dailies--make-runner "2026-08-31" marker))))
+        (funcall (plist-get bullet-runner :emit) "Create PR 1")
+        (should (equal (gethash :results (plist-get bullet-runner :state))
+                       '("+ Create PR 1"))))
+      (let ((heading-runner
+             (let ((reomacs/dailies-task-style 'heading))
+               (reomacs/dailies--make-runner "2026-08-31" marker))))
+        (funcall (plist-get heading-runner :emit) "Create PR 1")
+        (should (equal (gethash :results (plist-get heading-runner :state))
+                       '("*** Create PR 1")))))))
 
 (ert-deftest reomacs-dailies-github-fetches-are-bounded-and-paginated ()
   (let (commands)
@@ -651,29 +684,35 @@
   (accept-process-output nil 0.05))
 
 (ert-deftest reomacs-dailies-process-failure-finalizes-placeholder ()
-  (reomacs-dailies-test--with-org
-      (concat "+ " reomacs/dailies--placeholder "\n")
-    (let* ((marker (copy-marker (point-min) t))
-           (runner (reomacs/dailies--make-runner "2026-08-31" marker)))
-      (funcall (plist-get runner :fetch) '("false") #'ignore)
-      (reomacs-dailies-test--wait-for-pool (plist-get runner :pool))
-      (should (zerop (gethash :pending (plist-get runner :pool))))
-      (should-not (marker-buffer marker))
-      (should (string-match-p
-               "^\\+ ERROR: github interactions, 1 request failed$"
-               (string-trim (buffer-string)))))))
+  (dolist (style '(bullet heading))
+    (reomacs-dailies-test--with-org
+        (concat (if (eq style 'bullet) "+ " "*** ")
+                reomacs/dailies--placeholder "\n")
+      (let* ((marker (copy-marker (point-min) t))
+             (reomacs/dailies-task-style style)
+             (runner (reomacs/dailies--make-runner "2026-08-31" marker)))
+        (funcall (plist-get runner :fetch) '("false") #'ignore)
+        (reomacs-dailies-test--wait-for-pool (plist-get runner :pool))
+        (should (zerop (gethash :pending (plist-get runner :pool))))
+        (should-not (marker-buffer marker))
+        (should (string-match-p
+                 "^\\(?:\\+ \\|\\*\\*\\* \\)ERROR: github interactions, 1 request failed$"
+                 (string-trim (buffer-string))))))))
 
 (ert-deftest reomacs-dailies-callback-failure-finalizes-placeholder ()
-  (reomacs-dailies-test--with-org
-      (concat "+ " reomacs/dailies--placeholder "\n")
-    (let* ((marker (copy-marker (point-min) t))
-           (runner (reomacs/dailies--make-runner "2026-08-31" marker)))
-      (funcall (plist-get runner :fetch) '("printf" "{")
-               #'reomacs/dailies--json)
-      (reomacs-dailies-test--wait-for-pool (plist-get runner :pool))
-      (should (zerop (gethash :pending (plist-get runner :pool))))
-      (should-not (marker-buffer marker))
-      (should (string-match-p "^\\+ ERROR:" (buffer-string))))))
+  (dolist (style '(bullet heading))
+    (reomacs-dailies-test--with-org
+        (concat (if (eq style 'bullet) "+ " "*** ")
+                reomacs/dailies--placeholder "\n")
+      (let* ((marker (copy-marker (point-min) t))
+             (reomacs/dailies-task-style style)
+             (runner (reomacs/dailies--make-runner "2026-08-31" marker)))
+        (funcall (plist-get runner :fetch) '("printf" "{")
+                 #'reomacs/dailies--json)
+        (reomacs-dailies-test--wait-for-pool (plist-get runner :pool))
+        (should (zerop (gethash :pending (plist-get runner :pool))))
+        (should-not (marker-buffer marker))
+        (should (string-match-p "ERROR:" (buffer-string)))))))
 
 (ert-deftest reomacs-dailies-has-no-obsolete-submission-or-layout-paths ()
   (dolist (symbol '(reomacs/dailies-submit-timesheet

@@ -7,9 +7,10 @@
 
 ;; Maintain flat Org work dailies, fetch forge interactions, insert forge
 ;; references, display logged hours, and copy daily entries as Markdown.
-;; Tasks are level-3 TODO headings beneath the date heading, styled to
-;; read as body text.  Configure per-journal settings (forge, project,
-;; aliases, targets) as file-local variables in the dailies file.  Emacs
+;; Tasks live in `reomacs/dailies-task-style' (level-3 TODO headings or
+;; plain bullets) beneath the date heading, styled to read as body text.
+;; Configure per-journal settings (forge, project, aliases, targets) as
+;; file-local variables in the dailies file.  Emacs
 ;; only honors a Local Variables block within the last 3000 characters of
 ;; a file, so keep the block at the end of the journal.
 
@@ -148,7 +149,7 @@ Return the position of the new date heading."
          (todo (or (car org-not-done-keywords) "TODO"))
          (heading (concat "** " todo " "
                           (format-time-string "<%Y-%m-%d %a>" time)))
-         (task (concat "*** " todo " ")))
+         (task (reomacs/dailies--task-starter)))
     (unless entries
       (user-error "No date entries found in dailies file"))
     (if later
@@ -218,7 +219,8 @@ Return the position of the new date heading."
                target-date (reomacs/dailies--date-time target-date)))
         (goto-char created)
         (when (re-search-forward
-               "^\\*\\*\\* " (save-excursion (org-end-of-subtree t)) t)
+               (concat "^" (regexp-quote (reomacs/dailies--task-prefix)))
+               (save-excursion (org-end-of-subtree t)) t)
           (end-of-line))
         (reomacs/dailies-refresh-week-status)
         (switch-to-buffer dailies-buf)
@@ -303,6 +305,28 @@ Use an Azure organization/project/repository identity or GitHub owner/repo."
   :group 'reo101
   :safe (lambda (value) (and (stringp value) (not (string-blank-p value)))))
 
+(defcustom reomacs/dailies-task-style 'heading
+  "Line shape used for dailies task records.
+`heading' writes level-3 TODO headings; `bullet' writes plain `+' list
+items.  Set as a file-local variable in dailies.org."
+  :type '(choice (const :tag "Level-3 headings" heading)
+                 (const :tag "Plain bullets" bullet))
+  :group 'reo101
+  :safe (lambda (value) (memq value '(heading bullet))))
+
+(defun reomacs/dailies--task-prefix ()
+  "Return the line prefix for dailies task records."
+  (pcase reomacs/dailies-task-style
+    ('heading "*** ")
+    ('bullet "+ ")
+    (style (error "Unknown dailies task style: %s" style))))
+
+(defun reomacs/dailies--task-starter ()
+  "Return the line prefix starting a new dailies task."
+  (if (eq reomacs/dailies-task-style 'heading)
+      (concat "*** " (or (car org-not-done-keywords) "TODO") " ")
+    "+ "))
+
 (defun reomacs/dailies--format-event (event-type props)
   "Format an Org line for EVENT-TYPE using PROPS."
   (let ((url (plist-get props :url))
@@ -312,21 +336,21 @@ Use an Azure organization/project/repository identity or GitHub owner/repo."
         (actor (plist-get props :actor)))
     (pcase event-type
       ('pr-create
-       (format "+ Create [[%s][~%s~ PR %s]]" url name number))
+       (format "Create [[%s][~%s~ PR %s]]" url name number))
       ((or 'pr-close 'pr-merge)
-       (format "+ %s [[%s][~%s~ PR %s]]%s"
+       (format "%s [[%s][~%s~ PR %s]]%s"
                (if (eq event-type 'pr-merge) "Merge" "Close")
                url name number
                (if actor (format " (by @%s)" actor) "")))
       ('pr-review
-       (format "+ Review [[%s][~%s~ PR %s]]" url name number))
+       (format "Review [[%s][~%s~ PR %s]]" url name number))
       ('issue-create
-       (format "+ Create [[%s][~%s~ Issue %s]]" url name number))
+       (format "Create [[%s][~%s~ Issue %s]]" url name number))
       ('push-with-pr
-       (format "+ Push to ~%s~ branch ~%s~ ([[%s][PR %s]])"
+       (format "Push to ~%s~ branch ~%s~ ([[%s][PR %s]])"
                name branch url number))
       ('push-no-pr
-       (format "+ Push to ~%s~ branch ~%s~" name branch))
+       (format "Push to ~%s~ branch ~%s~" name branch))
       (_ (error "Unknown dailies event: %s" event-type)))))
 
 (defun reomacs/dailies--canonical-repo-id (repo-id)
@@ -566,6 +590,7 @@ Call ON-ERROR with command and diagnostic; call ON-IDLE after all work ends."
   "Insert collected results and finalize the placeholder for STATE."
   (let* ((marker (gethash :marker state))
          (forge (gethash :forge state))
+         (prefix (gethash :prefix state))
          (errors (nreverse (gethash :errors state)))
          (results (sort (delete-dups (gethash :results state)) #'string<)))
     (when (and marker (marker-buffer marker))
@@ -577,11 +602,11 @@ Call ON-ERROR with command and diagnostic; call ON-IDLE after all work ends."
               (insert-before-markers line "\n")))
           (goto-char marker)
           (when (looking-at
-                 (regexp-quote (concat "+ " reomacs/dailies--placeholder)))
+                 (regexp-quote (concat prefix reomacs/dailies--placeholder)))
             (delete-region (point) (line-beginning-position 2))
             (when errors
-              (insert (format "+ ERROR: %s interactions, %d request%s failed\n"
-                              forge (length errors)
+              (insert (format "%sERROR: %s interactions, %d request%s failed\n"
+                              prefix forge (length errors)
                               (if (= (length errors) 1) "" "s"))))))))
     (message "%s interactions fetch %s"
              forge (if errors
@@ -596,6 +621,7 @@ Call ON-ERROR with command and diagnostic; call ON-IDLE after all work ends."
   (let ((state (make-hash-table :test 'eq)) pool)
     (puthash :marker marker state)
     (puthash :forge reomacs/dailies-forge state)
+    (puthash :prefix (reomacs/dailies--task-prefix) state)
     (puthash :errors nil state)
     (puthash :results nil state)
     (setq pool
@@ -615,7 +641,8 @@ Call ON-ERROR with command and diagnostic; call ON-IDLE after all work ends."
                     pool command callback))
           :emit (lambda (line)
                   (puthash :results
-                           (cons line (gethash :results state)) state)))))
+                           (cons (concat (gethash :prefix state) line)
+                                 (gethash :results state)) state)))))
 
 (defun reomacs/dailies--json (output)
   "Parse JSON OUTPUT into lists and alists, signaling malformed data."
@@ -994,7 +1021,8 @@ Pushes have no queryable Azure feed and are not fetched."
   "Insert git forge interactions asynchronously.
 Queries the forge configured by `reomacs/dailies-forge' and replaces a
 placeholder when requests finish.  DAYS-BACK nil uses the previous
-workday, while zero uses today.  GitHub push history is limited to its
+workday, while zero uses today.  Lines follow
+`reomacs/dailies-task-style'.  GitHub push history is limited to its
 retained Events API window.  Azure review discovery checks every PR
 that was open on the requested date with concurrency-limited thread scans."
   (interactive
@@ -1011,7 +1039,8 @@ that was open on the requested date with concurrency-limited thread scans."
     (user-error "This command requires the configured dailies buffer"))
   (let ((target-date (reomacs/dailies--target-date days-back))
         (marker (point-marker)))
-    (insert "+ " reomacs/dailies--placeholder "\n")
+    (insert (reomacs/dailies--task-prefix)
+            reomacs/dailies--placeholder "\n")
     (set-marker marker (line-beginning-position 0))
     (set-marker-insertion-type marker t)
     (message "Fetching %s interactions for %s..."
