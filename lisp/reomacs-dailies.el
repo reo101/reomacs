@@ -7,16 +7,17 @@
 
 ;; Maintain flat Org work dailies, fetch forge interactions, insert forge
 ;; references, display logged hours, and copy daily entries as Markdown.
-;;
-;; Configure per-journal settings (forge, project, aliases, targets) as
-;; file-local variables in the dailies file.  Emacs only honors a Local
-;; Variables block within the last 3000 characters of a file, so keep the
-;; block at the end of the journal.
+;; Tasks are level-3 TODO headings beneath the date heading, styled to
+;; read as body text.  Configure per-journal settings (forge, project,
+;; aliases, targets) as file-local variables in the dailies file.  Emacs
+;; only honors a Local Variables block within the last 3000 characters of
+;; a file, so keep the block at the end of the journal.
 
 ;;; Code:
 
 (require 'calendar)
 (require 'dash)
+(require 'face-remap)
 (require 'json)
 (require 'org)
 (require 'org-element)
@@ -144,8 +145,10 @@ Return the position of the new date heading."
                             (string< iso-date (nth 1 entry)))
                           entries))
          (week-id (reomacs/dailies--week-id time))
-         (heading (concat "** " (or (car org-not-done-keywords) "TODO")
-                          " " (format-time-string "<%Y-%m-%d %a>" time))))
+         (todo (or (car org-not-done-keywords) "TODO"))
+         (heading (concat "** " todo " "
+                          (format-time-string "<%Y-%m-%d %a>" time)))
+         (task (concat "*** " todo " ")))
     (unless entries
       (user-error "No date entries found in dailies file"))
     (if later
@@ -166,7 +169,7 @@ Return the position of the new date heading."
            (concat (if same-week
                        "\n"
                      (concat "\n* Week " week-id "\n\n"))
-                   heading "\n\n+ \n\n")))
+                   heading "\n\n" task "\n\n")))
       (goto-char (save-excursion
                    (goto-char (nth 0 last-entry))
                    (org-end-of-subtree t)
@@ -180,7 +183,7 @@ Return the position of the new date heading."
                                (reomacs/dailies--date-time
                                 (nth 1 last-entry))))
                  (concat "* Week " week-id "\n\n"))
-               heading "\n\n+ ")))
+               heading "\n\n" task)))
     (reomacs/dailies--find-date-heading iso-date)))
 
 ;;;###autoload
@@ -215,7 +218,7 @@ Return the position of the new date heading."
                target-date (reomacs/dailies--date-time target-date)))
         (goto-char created)
         (when (re-search-forward
-               "^\\+ " (save-excursion (org-end-of-subtree t)) t)
+               "^\\*\\*\\* " (save-excursion (org-end-of-subtree t)) t)
           (end-of-line))
         (reomacs/dailies-refresh-week-status)
         (switch-to-buffer dailies-buf)
@@ -1616,7 +1619,8 @@ Submitted markers still count toward logged work."
       (while (< (point) end)
         (let ((line (buffer-substring-no-properties
                      (line-beginning-position) (line-end-position))))
-          (when (and (string-match "^[ \t]*\\+[ \t]+" line)
+          (when (and (string-match
+                      "^[ \t]*\\(?:\\+\\|\\*\\{3,\\}\\)[ \t]+" line)
                      (string-match reomacs/dailies--trailing-duration-re line)
                      (or (match-string 1 line) (match-string 2 line)))
             (setq total
@@ -1710,7 +1714,7 @@ Submitted markers still count toward logged work."
                      (save-excursion
                        (goto-char beg)
                        (beginning-of-line)
-                       (looking-at-p "[ \t]*\\+[ \t]+")))
+                       (looking-at-p "[ \t]*\\(?:\\+\\|\\*\\{3,\\}\\)[ \t]+")))
             (let* ((display (reomacs/dailies--duration-chip
                              hours minutes start complete))
                    (overlay (make-overlay beg end)))
@@ -1832,11 +1836,25 @@ COMPLETE controls the checkmark independently of the hour count."
                    (if (= (length reomacs/dailies--week-status-overlays) 1)
                        "" "s")))))))
 
+(defvar-local reomacs/dailies--level3-face-remap nil
+  "Face remap handle flattening level-3 heading faces, or nil.")
+
+(defun reomacs/dailies--style-task-headings ()
+  "Style task headings to read like plain body text.
+Level-3 headings render with the default face — body colour, height,
+and weight — while Org Superstar keeps its standard rendering.  TODO
+keywords keep their own highlighting."
+  (when reomacs/dailies--level3-face-remap
+    (face-remap-remove-relative reomacs/dailies--level3-face-remap))
+  (setq reomacs/dailies--level3-face-remap
+        (face-remap-add-relative 'org-level-3 'default)))
+
 (defun reomacs/dailies--configure-week-status ()
   "Configure duration chips and week/day status after local variables load."
   (if (and (derived-mode-p 'org-mode)
            (reomacs/dailies--buffer-p))
       (progn
+        (reomacs/dailies--style-task-headings)
         (add-hook 'before-change-functions
                   #'reomacs/dailies--capture-text-before-change nil t)
         (add-hook 'after-change-functions
@@ -1855,7 +1873,10 @@ COMPLETE controls the checkmark independently of the hour count."
     (setq reomacs/dailies--week-status-overlays nil
           reomacs/dailies--duration-overlays nil
           reomacs/dailies--revealed-duration-overlay nil
-          reomacs/dailies--text-before-change nil)))
+          reomacs/dailies--text-before-change nil)
+    (when reomacs/dailies--level3-face-remap
+      (face-remap-remove-relative reomacs/dailies--level3-face-remap)
+      (setq reomacs/dailies--level3-face-remap nil))))
 
 (add-hook 'hack-local-variables-hook #'reomacs/dailies--configure-week-status)
 

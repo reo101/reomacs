@@ -29,10 +29,12 @@
               "+ Estimate {1h}, actual {2h}\n"
               "+ Empty {}\n"
               "+ Invalid time {30m @99:99}\n"
+              "*** TODO Heading task {2h}\n"
+              "** Day <2026-08-31 Mon> {9h}\n"
               "+ No duration\n")
     (should (= (reomacs/dailies--sum-duration-minutes
                 (point-min) (point-max))
-               375))))
+               495))))
 
 (ert-deftest reomacs-dailies-conceals-and-reveals-task-durations ()
   (reomacs-dailies-test--with-org
@@ -41,6 +43,7 @@
               "+ Three {1.5h✓}\n"
               "+ Empty {}\n"
               "+ Invalid time {30m @99:99}\n"
+              "*** TODO Heading task {1h}\n"
               "Not a task {9h}\n")
     (set-buffer-modified-p nil)
     (reomacs/dailies-refresh-week-status)
@@ -48,7 +51,7 @@
              (mapcar (lambda (overlay)
                        (substring-no-properties (overlay-get overlay 'display)))
                      reomacs/dailies--duration-overlays)
-             '(" 󰔛 2h " " 󰔛 45m · 13:00 " " 󰔛 1.5h ✓ ")))
+             '(" 󰔛 2h " " 󰔛 45m · 13:00 " " 󰔛 1.5h ✓ " " 󰔛 1h ")))
     (let ((overlay (cadr reomacs/dailies--duration-overlays)))
       (goto-char (overlay-start overlay))
       (reomacs/dailies--reveal-duration-at-point)
@@ -147,7 +150,7 @@
                  #'ignore))
         (reomacs/dailies-new-day))
       (should (string-match-p
-               "\\*\\* TODO <2099-01-02 Fri>\n\n\\+ \n\\'"
+               "\\*\\* TODO <2099-01-02 Fri>\n\n\\*\\*\\* TODO "
                (buffer-string)))
       (should-not (string-match-p "\\*\\*\\* Today" (buffer-string))))))
 
@@ -200,6 +203,19 @@
       (should (equal (reomacs/dailies--date-at-heading) today))
       (should (< (reomacs/dailies--find-date-heading today)
                  (reomacs/dailies--find-date-heading "2099-01-01"))))))
+
+(ert-deftest reomacs-dailies-flattens-task-heading-faces ()
+  (reomacs-dailies-test--with-org "* Week 2026-W36\n"
+    (cl-letf (((symbol-function 'reomacs/dailies--buffer-p)
+               (lambda (&optional _) t)))
+      (reomacs/dailies--configure-week-status)
+      (should (assq 'org-level-3 face-remapping-alist))
+      (should (memq 'default
+                    (cdr (assq 'org-level-3 face-remapping-alist))))
+      (should (null reomacs/dailies--week-status-overlays)))
+    ;; Non-dailies teardown removes the remap
+    (reomacs/dailies--configure-week-status)
+    (should-not (assq 'org-level-3 face-remapping-alist))))
 
 (ert-deftest reomacs-dailies-copies-clean-markdown-with-optional-durations ()
   (reomacs-dailies-test--with-org
