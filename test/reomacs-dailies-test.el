@@ -187,6 +187,18 @@
       (should-not (string-match-p "\\*\\* TODO <2099-01-02 Fri>"
                                   (buffer-string))))))
 
+(ert-deftest reomacs-dailies-opens-and-focuses-buffer ()
+  (let ((buffer (generate-new-buffer " *dailies-test*"))
+        focused)
+    (unwind-protect
+        (cl-letf (((symbol-function 'reomacs/dailies--buffer)
+                   (lambda () buffer))
+                  ((symbol-function 'switch-to-buffer)
+                   (lambda (target) (setq focused target))))
+          (reomacs/dailies-open)
+          (should (eq focused buffer)))
+      (kill-buffer buffer))))
+
 (ert-deftest reomacs-dailies-goto-today-jumps-to-existing-entry ()
   (let ((stamp (format-time-string "<%Y-%m-%d %a>"))
         (today (format-time-string "%Y-%m-%d")))

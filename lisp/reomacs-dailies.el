@@ -42,6 +42,12 @@
     (or (get-file-buffer file)
         (find-file-noselect file))))
 
+;;;###autoload
+(defun reomacs/dailies-open ()
+  "Open and focus the dailies buffer without changing its contents."
+  (interactive)
+  (switch-to-buffer (reomacs/dailies--buffer)))
+
 (defcustom reomacs/dailies-daily-target-hours nil
   "Daily hours target, or nil to disable day/week status displays.
 The weekly target is five times this value."
