@@ -2051,6 +2051,200 @@ If point is after a non-delimiter, delete back to the previous boundary."
     ("C-c p a" . reomacs/project-remember-jj-projects))
 #+end_src
 
+** Azure DevOps PRs
+
+A small transient wrapper around `az repos pr create`. The source branch is
+read from the nearest bookmarked jj revision, so the working-copy commit can
+remain anonymous.
+
+#+begin_src emacs-lisp
+  (defcustom reomacs/azdo-organization nil
+    "Azure DevOps organization URL, or nil to infer it from the jj remote."
+    :type '(choice (const :tag "Infer from remote" nil) string))
+
+  (defcustom reomacs/azdo-project nil
+    "Azure DevOps project name, or nil to infer it from the jj remote."
+    :type '(choice (const :tag "Infer from remote" nil) string))
+
+  (defcustom reomacs/azdo-repository nil
+    "Azure Repos repository name, or nil to infer it from the jj remote."
+    :type '(choice (const :tag "Infer from remote" nil) string))
+
+  (defcustom reomacs/azdo-target-branch nil
+    "Azure Repos pull-request target branch, or nil to infer jj `trunk()'."
+    :type '(choice (const :tag "Infer from jj trunk()" nil) string))
+
+  (defun reomacs/azdo-pr--root ()
+    "Return the current project root, or signal outside a project."
+    (or (when-let ((project (project-current)))
+          (project-root project))
+        (user-error "Not inside a project")))
+
+  (defun reomacs/azdo-pr--jj (&rest args)
+    "Run jj with ARGS in the current project and return cleaned output."
+    (let ((default-directory (reomacs/azdo-pr--root)))
+      (with-temp-buffer
+        (when (zerop (apply #'call-process "jj" nil t nil args))
+          (require 'ansi-color)
+          (ansi-color-filter-apply (string-trim (buffer-string)))))))
+
+  (defun reomacs/azdo-pr--remote-info ()
+    "Infer Azure DevOps repository settings from the jj `origin' remote."
+    (let* ((remote-lines (split-string (or (reomacs/azdo-pr--jj "git" "remote" "list") "") "\n" t))
+           (remote (catch 'remote
+                     (dolist (line remote-lines)
+                       (when (string-match "\\`origin[[:space:]]+\\(.+\\)\\'" line)
+                         (throw 'remote (match-string 1 line)))))))
+      (unless remote
+        (user-error "No jj origin remote found"))
+      (cond
+       ((string-match "\\`https?://\\(?:[^/@]+@\\)?dev\\.azure\\.com/\\([^/]+\\)/\\([^/]+\\)/_git/\\([^/?#]+\\)\\(?:\\.git\\)?/?\\'" remote)
+        (list :organization (format "https://dev.azure.com/%s" (match-string 1 remote))
+              :project (match-string 2 remote)
+              :repository (match-string 3 remote)))
+       ((string-match "\\`https?://\\([^./]+\\)\\.visualstudio\\.com/\\([^/]+\\)/_git/\\([^/?#]+\\)\\(?:\\.git\\)?/?\\'" remote)
+        (list :organization (format "https://%s.visualstudio.com" (match-string 1 remote))
+              :project (match-string 2 remote)
+              :repository (match-string 3 remote)))
+       ((string-match "\\`git@ssh\\.dev\\.azure\\.com:v3/\\([^/]+\\)/\\([^/]+\\)/\\([^/?#]+\\)\\(?:\\.git\\)?/?\\'" remote)
+        (list :organization (format "https://dev.azure.com/%s" (match-string 1 remote))
+              :project (match-string 2 remote)
+              :repository (match-string 3 remote)))
+       (t
+        (user-error "Could not parse Azure DevOps remote: %s" remote)))))
+
+  (defun reomacs/azdo-pr--settings ()
+    "Return configured Azure DevOps settings, inferring missing values."
+    (let* ((remote (when (or (null reomacs/azdo-organization)
+                             (null reomacs/azdo-project)
+                             (null reomacs/azdo-repository))
+                     (reomacs/azdo-pr--remote-info))))
+      (list :organization (or reomacs/azdo-organization
+                              (plist-get remote :organization))
+            :project (or reomacs/azdo-project
+                         (plist-get remote :project))
+            :repository (or reomacs/azdo-repository
+                            (plist-get remote :repository)))))
+
+  (defun reomacs/azdo-pr--source-branch ()
+    "Return the nearest bookmarked jj ancestor, or prompt for one."
+    (or (when-let ((bookmarks
+                   (reomacs/azdo-pr--jj
+                    "log" "-r" "bookmarks() & ancestors(@)"
+                    "-n" "1" "--no-graph" "-T" "bookmarks")))
+          (car (split-string bookmarks "[[:space:]]+" t)))
+        (read-string "Source branch: ")))
+
+  (defun reomacs/azdo-pr--target-branch ()
+    "Return the configured target branch or the bookmark on jj `trunk()'."
+    (or reomacs/azdo-target-branch
+        (when-let ((bookmarks
+                   (reomacs/azdo-pr--jj
+                    "log" "-r" "trunk()" "-n" "1" "--no-graph" "-T" "bookmarks")))
+          (car (split-string bookmarks "[[:space:]]+" t)))
+        (read-string "Target branch: ")))
+
+  (defun reomacs/azdo-pr--default-title ()
+    "Return the parent jj description's first line as a title default."
+    (when-let ((description
+                (reomacs/azdo-pr--jj
+                 "log" "-r" "@-" "-n" "1" "--no-graph" "-T" "description")))
+      (car (split-string description "\n" t))))
+
+  (defun reomacs/azdo-pr--web-url (settings source target)
+    "Build the Azure DevOps PR creation URL from SETTINGS, SOURCE, and TARGET.
+Only source/target branch selection is supported by this URL."
+    (require 'url-util)
+    (format "%s/%s/_git/%s/pullrequestcreate?sourceRef=%s&targetRef=%s"
+            (replace-regexp-in-string "/\\\\'" "" (plist-get settings :organization))
+            (url-hexify-string (plist-get settings :project))
+            (url-hexify-string (plist-get settings :repository))
+            (url-hexify-string source)
+            (url-hexify-string target)))
+
+  (defun reomacs/azdo-pr-prepare ()
+    "Open the Azure DevOps PR creation form without creating a PR."
+    (interactive)
+    (let ((settings (reomacs/azdo-pr--settings))
+          (source (reomacs/azdo-pr--source-branch))
+          (target (reomacs/azdo-pr--target-branch)))
+      (require 'browse-url)
+      (browse-url (reomacs/azdo-pr--web-url settings source target))
+      (message "Opened PR form; title, description, draft state, and reviewers are browser-only")))
+
+  (defun reomacs/azdo-pr--transient-args ()
+    "Return normalized `az repos pr create' args from the transient."
+    (let ((args (or (transient-args 'reomacs/azdo-pr-menu)
+                    '("--draft=true"))))
+      (-mapcat
+       (lambda (arg)
+         (cond
+          ((string-match
+            "\\`\\(--\\(?:labels\\|optional-reviewers\\|required-reviewers\\|work-items\\)=\\)\\(.+\\)\\'"
+            arg)
+           (cons (substring (match-string 1 arg) 0 -1)
+                 (split-string (match-string 2 arg) "[,[:space:]]+" t)))
+          ((string-match "\\`\\(--[^=]+\\)=\\(.+\\)\\'" arg)
+           (list (match-string 1 arg) (match-string 2 arg)))
+          (t
+           (list arg))))
+       args)))
+
+  (defun reomacs/azdo-pr-create ()
+    "Create a PR with the current Azure DevOps transient options."
+    (interactive)
+    (unless (executable-find "az")
+      (user-error "Azure CLI (`az`) is not on PATH"))
+    (let* ((root (reomacs/azdo-pr--root))
+           (settings (reomacs/azdo-pr--settings))
+           (source (reomacs/azdo-pr--source-branch))
+           (target (reomacs/azdo-pr--target-branch))
+           (organization (plist-get settings :organization))
+           (project (plist-get settings :project))
+           (repository (plist-get settings :repository))
+           (title (read-string "Title: " (reomacs/azdo-pr--default-title)))
+           (description (read-string "Description: "))
+           (args (append
+                  (list "az" "repos" "pr" "create"
+                        "--organization" organization
+                        "--project" project
+                        "--repository" repository
+                        "--source-branch" source
+                        "--target-branch" target
+                        "--title" title
+                        "--description" description)
+                  (reomacs/azdo-pr--transient-args)))
+           (command (mapconcat #'shell-quote-argument args " ")))
+      (let ((default-directory root))
+        (compilation-start command 'compilation-mode
+                           (lambda (_) "*azdo-pr*")))))
+
+  (transient-define-prefix reomacs/azdo-pr-menu ()
+    "Azure DevOps pull requests."
+    :value '("--draft=true")
+    [["PR options"
+      ("d" "Draft" "--draft=" :choices ("true" "false"))
+      ("o" "Open browser" "--open")
+      ("a" "Auto-complete" "--auto-complete=" :choices ("true" "false"))
+      ("b" "Bypass policy" "--bypass-policy=" :choices ("true" "false"))
+      ("B" "Bypass reason" "--bypass-policy-reason=")
+      ("x" "Delete source branch" "--delete-source-branch=" :choices ("true" "false"))]
+     ["Merge"
+      ("m" "Merge message" "--merge-commit-message=")
+      ("s" "Squash" "--squash=" :choices ("true" "false"))
+      ("T" "Transition work items" "--transition-work-items=" :choices ("true" "false"))]
+     ["Metadata"
+      ("l" "Labels" "--labels=")
+      ("r" "Optional reviewers" "--optional-reviewers=")
+      ("R" "Required reviewers" "--required-reviewers=")
+      ("w" "Work items" "--work-items=")]
+     ["Actions"
+      ("p" "Prepare web form" reomacs/azdo-pr-prepare)
+      ("c" "Create PR" reomacs/azdo-pr-create)]])
+
+  (global-set-key (kbd "C-c p r") #'reomacs/azdo-pr-menu)
+#+end_src
+
 ** Direnv
 
 #+begin_src emacs-lisp
