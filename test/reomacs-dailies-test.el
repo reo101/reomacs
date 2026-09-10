@@ -299,13 +299,13 @@
   (reomacs-dailies-test--with-org
       (concat "* Week 2026-W36\n"
               "** TODO <2026-08-31 Mon>\n"
-              "+ Meetings {30m}\n"
+              "+ Meetings {30m}\n\n"
               "+ Review [[https://example.test/pr/1][PR 1]] using ~uom~ {2h}\n"
               "** TODO <2026-09-01 Tue>\n"
               "+ Wrong day {8h}\n")
     (search-forward "Review")
     (set-buffer-modified-p nil)
-    (let (without with without-links)
+    (let (without with without-links styled)
       (cl-letf (((symbol-function 'kill-new)
                  (lambda (text &rest _) (setq without text))))
         (reomacs/dailies-day-to-markdown-clipboard nil))
@@ -315,6 +315,9 @@
       (cl-letf (((symbol-function 'kill-new)
                  (lambda (text &rest _) (setq without-links text))))
         (reomacs/dailies-day-to-markdown-clipboard nil t))
+      (cl-letf (((symbol-function 'kill-new)
+                 (lambda (text &rest _) (setq styled text))))
+        (reomacs/dailies-day-to-markdown-clipboard nil t "+" "code"))
       (should (equal without
                      (concat "- Meetings\n"
                              "- Review [PR 1](https://example.test/pr/1) using `uom`")))
@@ -324,6 +327,28 @@
       (should (equal without-links
                      (concat "- Meetings\n"
                              "- Review PR 1 using `uom`")))
+      (should (equal styled
+                     (concat "+ Meetings\n"
+                             "+ Review `PR 1` using `uom`")))
+      (should (equal (reomacs/dailies--remove-org-links
+                      "[[https://example.test][PR 1]]" "emphasis")
+                     "*PR 1*"))
+      (should-not (buffer-modified-p)))))
+
+(ert-deftest reomacs-dailies-copies-heading-tasks-as-compact-bullets ()
+  (reomacs-dailies-test--with-org
+      (concat "* Week 2026-W36\n"
+              "** TODO <2026-08-31 Mon>\n"
+              "*** TODO First task {1h}\n\n"
+              "*** DONE Second task\n")
+    (search-forward "First task")
+    (set-buffer-modified-p nil)
+    (let (copied)
+      (cl-letf (((symbol-function 'kill-new)
+                 (lambda (text &rest _) (setq copied text))))
+        (reomacs/dailies-day-to-markdown-clipboard nil nil "+" "plain"))
+      (should (equal copied
+                     "+ First task\n+ Second task"))
       (should-not (buffer-modified-p)))))
 
 (ert-deftest reomacs-dailies-resolves-the-exact-visiting-buffer ()

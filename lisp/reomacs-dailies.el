@@ -1942,23 +1942,58 @@ keywords keep their own highlighting."
 
 (add-hook 'hack-local-variables-hook #'reomacs/dailies--configure-week-status)
 
-(defun reomacs/dailies--remove-org-links (content)
-  "Replace Org links in CONTENT with their descriptions.
-Bare links are replaced with their URLs."
+(defun reomacs/dailies--remove-org-links (content link-markup)
+  "Replace Org links in CONTENT with formatted descriptions.
+Bare links are replaced with their URLs.  LINK-MARKUP is plain,
+emphasis, or code."
   (with-temp-buffer
     (insert content)
     (goto-char (point-min))
     (while (re-search-forward
             "\\[\\[\\([^]]+\\)\\]\\(?:\\[\\([^]]*\\)\\]\\)?\\]"
             nil t)
-      (replace-match (or (match-string 2) (match-string 1)) t))
+      (let ((text (or (match-string 2) (match-string 1))))
+        (replace-match
+         (pcase link-markup
+           ("emphasis" (format "*%s*" text))
+           ("code" (format "~%s~" text))
+           (_ text))
+         t)))
     (buffer-string)))
 
+(defun reomacs/dailies--markdown-option (args prefix default)
+  "Return the value of PREFIX in transient ARGS, or DEFAULT."
+  (or (seq-some
+       (lambda (arg)
+         (when (string-prefix-p prefix arg)
+           (substring arg (length prefix))))
+       args)
+      default))
+
+(defun reomacs/dailies--format-markdown (markdown bullet)
+  "Format exported MARKDOWN as compact BULLET lists.
+Org task headings become bullets and lose their TODO state."
+  (setq markdown
+        (replace-regexp-in-string
+         "^\\([ \t]*\\)#+[ \t]+"
+         (concat "\\1" bullet " ")
+         markdown))
+  (setq markdown
+        (replace-regexp-in-string
+         "^\\([ \t]*\\)[-+*][ \t]+"
+         (concat "\\1" bullet " ")
+         markdown))
+  (replace-regexp-in-string
+   "\n\\{2,\\}\\([ \\t]*[-+*] \\)"
+   "\n\\1"
+   markdown))
+
 (defun reomacs/dailies--copy-day-to-markdown-clipboard
-    (keep-durations remove-links)
+    (keep-durations remove-links bullet link-markup)
   "Copy the containing dailies date's entries as Markdown bullets.
 KEEP-DURATIONS retains trailing duration annotations.  REMOVE-LINKS
-replaces Org links with their descriptions before exporting."
+replaces Org links with formatted descriptions.  BULLET selects the
+list marker and LINK-MARKUP selects plain, emphasis, or code text."
   (require 'ox-md)
   (unless (derived-mode-p 'org-mode)
     (user-error "This command requires an Org buffer"))
@@ -1981,17 +2016,18 @@ replaces Org links with their descriptions before exporting."
                     (replace-match ""))
                   (buffer-string))))
         (when remove-links
-          (setq content (reomacs/dailies--remove-org-links content)))
+          (setq content
+                (reomacs/dailies--remove-org-links content link-markup)))
         (let ((markdown
                (org-export-string-as
                 content 'md t
                 '(:with-toc nil :section-numbers nil
+                  :with-todo-keywords nil
                   :with-timestamps nil :with-broken-links t))))
           (setq markdown
                 (string-trim
-                 (replace-regexp-in-string
-                  "^\\([ \t]*[-+*]\\)[ \t]+" "\\1 "
-                  (replace-regexp-in-string "\n\\{3,\\}" "\n\n" markdown))))
+                 (reomacs/dailies--format-markdown
+                  markdown (or bullet "-"))))
           (kill-new markdown)
           (message "Copied %s as Markdown%s%s"
                    date
@@ -2004,23 +2040,30 @@ replaces Org links with their descriptions before exporting."
   (let ((args (transient-args 'reomacs/dailies-markdown-menu)))
     (reomacs/dailies--copy-day-to-markdown-clipboard
      (member "--keep-durations" args)
-     (member "--remove-links" args))))
+     (member "--remove-links" args)
+     (reomacs/dailies--markdown-option args "--bullet=" "-")
+     (reomacs/dailies--markdown-option args "--link-markup=" "plain"))))
 
 (transient-define-prefix reomacs/dailies-markdown-menu ()
   "Choose dailies Markdown copy options."
+  :value '("--bullet=-" "--link-markup=plain")
   [["Options"
     ("d" "Keep durations" "--keep-durations")
-    ("l" "Remove links" "--remove-links")]
+    ("l" "Remove links" "--remove-links")
+    ("b" "Bullet style" "--bullet=" :choices ("-" "*" "+"))
+    ("m" "Link text" "--link-markup="
+     :choices ("plain" "emphasis" "code"))]
    ["Actions"
     ("RET" "Copy" reomacs/dailies--markdown-menu-copy)]])
 
 ;;;###autoload
 (defun reomacs/dailies-day-to-markdown-clipboard
-    (&optional keep-durations remove-links)
+    (&optional keep-durations remove-links bullet link-markup)
   "Copy the containing dailies date's entries as Markdown bullets.
-By default, remove trailing durations and retain links.  With a
-prefix argument, open a transient menu for both options.
-KEEP-DURATIONS and REMOVE-LINKS are also accepted programmatically."
+By default, remove trailing durations, retain links, and use compact
+`-' bullets.  With a prefix argument, open a transient menu for all
+options.  The optional arguments KEEP-DURATIONS, REMOVE-LINKS, BULLET,
+and LINK-MARKUP are accepted programmatically."
   (interactive
    (if current-prefix-arg
        (progn
@@ -2029,7 +2072,7 @@ KEEP-DURATIONS and REMOVE-LINKS are also accepted programmatically."
      nil))
   (unless (eq keep-durations :transient)
     (reomacs/dailies--copy-day-to-markdown-clipboard
-     keep-durations remove-links)))
+     keep-durations remove-links bullet link-markup)))
 (provide 'reomacs-dailies)
 
 ;;; reomacs-dailies.el ends here
