@@ -305,19 +305,25 @@
               "+ Wrong day {8h}\n")
     (search-forward "Review")
     (set-buffer-modified-p nil)
-    (let (without with)
+    (let (without with without-links)
       (cl-letf (((symbol-function 'kill-new)
                  (lambda (text &rest _) (setq without text))))
         (reomacs/dailies-day-to-markdown-clipboard nil))
       (cl-letf (((symbol-function 'kill-new)
                  (lambda (text &rest _) (setq with text))))
         (reomacs/dailies-day-to-markdown-clipboard t))
+      (cl-letf (((symbol-function 'kill-new)
+                 (lambda (text &rest _) (setq without-links text))))
+        (reomacs/dailies-day-to-markdown-clipboard nil t))
       (should (equal without
                      (concat "- Meetings\n"
                              "- Review [PR 1](https://example.test/pr/1) using `uom`")))
       (should (equal with
                      (concat "- Meetings {30m}\n"
                              "- Review [PR 1](https://example.test/pr/1) using `uom` {2h}")))
+      (should (equal without-links
+                     (concat "- Meetings\n"
+                             "- Review PR 1 using `uom`")))
       (should-not (buffer-modified-p)))))
 
 (ert-deftest reomacs-dailies-resolves-the-exact-visiting-buffer ()

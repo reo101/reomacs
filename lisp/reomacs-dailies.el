@@ -1,6 +1,6 @@
 ;;; reomacs-dailies.el --- Work dailies helpers -*- lexical-binding: t; -*-
 
-;; Package-Requires: ((emacs "29.1") (dash "2.20.0"))
+;; Package-Requires: ((emacs "29.1") (dash "2.20.0") (transient "0.3.0"))
 ;; Keywords: convenience, outlines
 
 ;;; Commentary:
@@ -24,6 +24,7 @@
 (require 'org-element)
 (require 'seq)
 (require 'subr-x)
+(require 'transient)
 
 (defcustom reomacs/dailies-file "~/Projects/Baringa/dailies.org"
   "Path to the Org file used for work dailies."
@@ -1941,12 +1942,23 @@ keywords keep their own highlighting."
 
 (add-hook 'hack-local-variables-hook #'reomacs/dailies--configure-week-status)
 
-;;;###autoload
-(defun reomacs/dailies-day-to-markdown-clipboard (&optional keep-durations)
+(defun reomacs/dailies--remove-org-links (content)
+  "Replace Org links in CONTENT with their descriptions.
+Bare links are replaced with their URLs."
+  (with-temp-buffer
+    (insert content)
+    (goto-char (point-min))
+    (while (re-search-forward
+            "\\[\\[\\([^]]+\\)\\]\\(?:\\[\\([^]]*\\)\\]\\)?\\]"
+            nil t)
+      (replace-match (or (match-string 2) (match-string 1)) t))
+    (buffer-string)))
+
+(defun reomacs/dailies--copy-day-to-markdown-clipboard
+    (keep-durations remove-links)
   "Copy the containing dailies date's entries as Markdown bullets.
-By default, remove trailing duration annotations such as {2h} and
-{45m @13:00}.  With prefix argument KEEP-DURATIONS, retain them."
-  (interactive "P")
+KEEP-DURATIONS retains trailing duration annotations.  REMOVE-LINKS
+replaces Org links with their descriptions before exporting."
   (require 'ox-md)
   (unless (derived-mode-p 'org-mode)
     (user-error "This command requires an Org buffer"))
@@ -1968,6 +1980,8 @@ By default, remove trailing duration annotations such as {2h} and
                           reomacs/dailies--trailing-duration-re nil t)
                     (replace-match ""))
                   (buffer-string))))
+        (when remove-links
+          (setq content (reomacs/dailies--remove-org-links content)))
         (let ((markdown
                (org-export-string-as
                 content 'md t
@@ -1979,9 +1993,43 @@ By default, remove trailing duration annotations such as {2h} and
                   "^\\([ \t]*[-+*]\\)[ \t]+" "\\1 "
                   (replace-regexp-in-string "\n\\{3,\\}" "\n\n" markdown))))
           (kill-new markdown)
-          (message "Copied %s as Markdown%s"
+          (message "Copied %s as Markdown%s%s"
                    date
-                   (if keep-durations " with durations" "")))))))
+                   (if keep-durations " with durations" "")
+                   (if remove-links " without links" "")))))))
+
+(defun reomacs/dailies--markdown-menu-copy ()
+  "Copy dailies Markdown using the current transient options."
+  (interactive)
+  (let ((args (transient-args 'reomacs/dailies-markdown-menu)))
+    (reomacs/dailies--copy-day-to-markdown-clipboard
+     (member "--keep-durations" args)
+     (member "--remove-links" args))))
+
+(transient-define-prefix reomacs/dailies-markdown-menu ()
+  "Choose dailies Markdown copy options."
+  [["Options"
+    ("d" "Keep durations" "--keep-durations")
+    ("l" "Remove links" "--remove-links")]
+   ["Actions"
+    ("RET" "Copy" reomacs/dailies--markdown-menu-copy)]])
+
+;;;###autoload
+(defun reomacs/dailies-day-to-markdown-clipboard
+    (&optional keep-durations remove-links)
+  "Copy the containing dailies date's entries as Markdown bullets.
+By default, remove trailing durations and retain links.  With a
+prefix argument, open a transient menu for both options.
+KEEP-DURATIONS and REMOVE-LINKS are also accepted programmatically."
+  (interactive
+   (if current-prefix-arg
+       (progn
+         (reomacs/dailies-markdown-menu)
+         (list :transient))
+     nil))
+  (unless (eq keep-durations :transient)
+    (reomacs/dailies--copy-day-to-markdown-clipboard
+     keep-durations remove-links)))
 (provide 'reomacs-dailies)
 
 ;;; reomacs-dailies.el ends here
