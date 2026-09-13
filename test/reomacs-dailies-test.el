@@ -93,7 +93,19 @@
   (should (safe-local-variable-p
            'reomacs/dailies-default-repository "org/project/repo"))
   (should-not (safe-local-variable-p
-               'reomacs/dailies-default-repository '(shell-command "false"))))
+               'reomacs/dailies-default-repository '(shell-command "false")))
+  (should (safe-local-variable-p
+           'reomacs/dailies-markdown-keep-durations nil))
+  (should (safe-local-variable-p
+           'reomacs/dailies-markdown-remove-links t))
+  (should (safe-local-variable-p
+           'reomacs/dailies-markdown-bullet "-"))
+  (should-not (safe-local-variable-p
+               'reomacs/dailies-markdown-bullet "#"))
+  (should (safe-local-variable-p
+           'reomacs/dailies-markdown-link-markup "plain"))
+  (should-not (safe-local-variable-p
+               'reomacs/dailies-markdown-link-markup "html")))
 
 (ert-deftest reomacs-dailies-renders-day-and-week-status-overlays ()
   (reomacs-dailies-test--with-org
@@ -349,6 +361,25 @@
         (reomacs/dailies-day-to-markdown-clipboard nil nil "+" "plain"))
       (should (equal copied
                      "+ First task\n+ Second task"))
+      (should-not (buffer-modified-p)))))
+
+(ert-deftest reomacs-dailies-markdown-uses-local-defaults ()
+  (reomacs-dailies-test--with-org
+      (concat "* Week 2026-W36\n"
+              "** TODO <2026-08-31 Mon>\n"
+              "*** TODO Review [[https://example.test][PR 1]] {2h}\n")
+    (search-forward "Review")
+    (setq-local reomacs/dailies-markdown-keep-durations nil
+                reomacs/dailies-markdown-remove-links t
+                reomacs/dailies-markdown-bullet "+"
+                reomacs/dailies-markdown-link-markup "code")
+    (set-buffer-modified-p nil)
+    (let (copied)
+      (let ((current-prefix-arg nil))
+        (cl-letf (((symbol-function 'kill-new)
+                   (lambda (text &rest _) (setq copied text))))
+          (call-interactively #'reomacs/dailies-day-to-markdown-clipboard)))
+      (should (equal copied "+ Review `PR 1`"))
       (should-not (buffer-modified-p)))))
 
 (ert-deftest reomacs-dailies-resolves-the-exact-visiting-buffer ()

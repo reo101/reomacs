@@ -31,6 +31,30 @@
   :type 'file
   :group 'reo101)
 
+(defcustom reomacs/dailies-markdown-keep-durations nil
+  "Whether Markdown copies retain trailing duration annotations."
+  :type 'boolean
+  :group 'reo101
+  :safe (lambda (value) (memq value '(nil t))))
+
+(defcustom reomacs/dailies-markdown-remove-links t
+  "Whether Markdown copies replace links with their descriptions."
+  :type 'boolean
+  :group 'reo101
+  :safe (lambda (value) (memq value '(nil t))))
+
+(defcustom reomacs/dailies-markdown-bullet "-"
+  "Bullet marker used when copying dailies entries as Markdown."
+  :type '(choice (const "-") (const "*") (const "+"))
+  :group 'reo101
+  :safe (lambda (value) (member value '("-" "*" "+"))))
+
+(defcustom reomacs/dailies-markdown-link-markup "plain"
+  "Markup for link descriptions when copying without links."
+  :type '(choice (const "plain") (const "emphasis") (const "code"))
+  :group 'reo101
+  :safe (lambda (value) (member value '("plain" "emphasis" "code"))))
+
 (defun reomacs/dailies--buffer-p (&optional buffer)
   "Return non-nil when BUFFER visits `reomacs/dailies-file'."
   (when-let* ((buffer (or buffer (current-buffer)))
@@ -2041,12 +2065,21 @@ list marker and LINK-MARKUP selects plain, emphasis, or code text."
     (reomacs/dailies--copy-day-to-markdown-clipboard
      (member "--keep-durations" args)
      (member "--remove-links" args)
-     (reomacs/dailies--markdown-option args "--bullet=" "-")
-     (reomacs/dailies--markdown-option args "--link-markup=" "plain"))))
+     (reomacs/dailies--markdown-option
+      args "--bullet=" reomacs/dailies-markdown-bullet)
+     (reomacs/dailies--markdown-option
+      args "--link-markup=" reomacs/dailies-markdown-link-markup))))
 
 (transient-define-prefix reomacs/dailies-markdown-menu ()
   "Choose dailies Markdown copy options."
-  :value '("--bullet=-" "--link-markup=plain")
+  :value (append
+          (when reomacs/dailies-markdown-keep-durations
+            '("--keep-durations"))
+          (when reomacs/dailies-markdown-remove-links
+            '("--remove-links"))
+          (list (format "--bullet=%s" reomacs/dailies-markdown-bullet)
+                (format "--link-markup=%s"
+                        reomacs/dailies-markdown-link-markup)))
   [["Options"
     ("d" "Keep durations" "--keep-durations")
     ("l" "Remove links" "--remove-links")
@@ -2069,7 +2102,10 @@ and LINK-MARKUP are accepted programmatically."
        (progn
          (reomacs/dailies-markdown-menu)
          (list :transient))
-     nil))
+     (list reomacs/dailies-markdown-keep-durations
+           reomacs/dailies-markdown-remove-links
+           reomacs/dailies-markdown-bullet
+           reomacs/dailies-markdown-link-markup)))
   (unless (eq keep-durations :transient)
     (reomacs/dailies--copy-day-to-markdown-clipboard
      keep-durations remove-links bullet link-markup)))
