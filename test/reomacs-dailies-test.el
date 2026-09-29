@@ -125,6 +125,20 @@
       (should (member " — 2/8h" texts))
       (should (member " — 8.5/40h" texts)))))
 
+(ert-deftest reomacs-dailies-date-range-target-scales-by-inclusive-days ()
+  (reomacs-dailies-test--with-org
+      (concat "* Week 2026-W39\n"
+              "** <2026-09-23 Wed>--<2026-09-25 Fri>\n"
+              "+ Conference {32h}\n")
+    (setq-local reomacs/dailies-daily-target-hours 8)
+    (reomacs/dailies-refresh-week-status)
+    (let ((texts (mapcar (lambda (overlay)
+                           (substring-no-properties
+                            (overlay-get overlay 'after-string)))
+                         reomacs/dailies--week-status-overlays)))
+      (should (member " — 32/24h" texts))
+      (should (member " — 32/40h" texts)))))
+
 (ert-deftest reomacs-dailies-hours-overlays-survive-folding ()
   (reomacs-dailies-test--with-org
       (concat "* Week 2026-W36\n"

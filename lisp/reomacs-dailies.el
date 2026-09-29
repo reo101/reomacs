@@ -138,6 +138,24 @@ TODO state, priority, tags and COMMENT metadata are ignored."
               (progn (reomacs/dailies--date-parts date) date)
             (error nil)))))))
 
+(defun reomacs/dailies--date-range-days-at-heading ()
+  "Return the inclusive day count of the current date range heading.
+Return one for a single date or an invalid range."
+  (let ((title (org-get-heading t t t t)))
+    (if (string-match
+         "\\`<\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\)[^>]*>--<\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\)[^>]*>"
+         title)
+        (condition-case nil
+            (let* ((start (match-string 1 title))
+                   (end (match-string 2 title))
+                   (days (1+ (- (calendar-absolute-from-gregorian
+                                 (reomacs/dailies--date-parts end))
+                                (calendar-absolute-from-gregorian
+                                 (reomacs/dailies--date-parts start))))))
+              (if (> days 0) days 1))
+          (error 1))
+      1)))
+
 (defun reomacs/dailies--goto-containing-date-heading ()
   "Move to the containing date heading and return its ISO date.
 Return nil when point is not inside a level-two date subtree."
@@ -1898,6 +1916,9 @@ end, where an after-string would be hidden with the folded region."
                   (goto-char (match-beginning 0))
                   (when (reomacs/dailies--date-at-heading)
                     (let* ((done (org-entry-is-done-p))
+                           (target-minutes
+                            (* day-target
+                               (reomacs/dailies--date-range-days-at-heading)))
                            (day-beg (line-beginning-position 2))
                            (day-end (save-excursion
                                       (org-end-of-subtree t)
@@ -1906,7 +1927,8 @@ end, where an after-string would be hidden with the folded region."
                                      day-beg day-end)))
                       (setq week-minutes (+ week-minutes minutes))
                       (reomacs/dailies--add-hours-status-overlay
-                       (line-end-position) minutes day-target "Daily" done)))
+                       (line-end-position) minutes target-minutes
+                       "Daily" done)))
                   (forward-line 1)))
               (reomacs/dailies--add-hours-status-overlay
                week-heading-end week-minutes week-target "Weekly"
