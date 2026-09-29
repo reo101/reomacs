@@ -4,6 +4,38 @@
 (when (< emacs-major-version 29)
   (error "Reomacs requires Emacs 29+, you have %s" emacs-version))
 
+;; Set up the native Android GUI before loading the package-heavy config.
+;; The GUI owns the Emacs server; NoD shells connect through its Unix socket.
+(when (eq system-type 'android)
+  (setq temporary-file-directory
+        (file-name-as-directory
+         (expand-file-name "cache/nns" user-emacs-directory))
+        create-lockfiles nil
+        make-backup-files nil)
+  (make-directory temporary-file-directory t)
+  (add-to-list 'load-path (expand-file-name "lisp" user-emacs-directory))
+  (require 'nns)
+  (nns-mode 1)
+
+  (require 'server)
+  (setq server-socket-dir "/data/nix/var/emacs-server")
+  ;; The directory belongs to Emacs, with search-only access for NoD.
+  ;; Upstream rejects any group access, including search without write.
+  (defun reomacs/android-server-ensure-safe-dir (original directory)
+    "Accept only the provisioned, search-only Android server DIRECTORY."
+    (if (equal (directory-file-name directory) server-socket-dir)
+        (let ((attributes (file-attributes directory 'integer)))
+          (unless (and (eq t (file-attribute-type attributes))
+                       (= (file-attribute-user-id attributes) (user-uid))
+                       (= (file-modes directory 'nofollow) #o2710))
+            (error "Unsafe Android Emacs server directory: %s" directory)))
+      (funcall original directory)))
+  (when (file-directory-p server-socket-dir)
+    (advice-add 'server-ensure-safe-dir :around
+                #'reomacs/android-server-ensure-safe-dir)
+    (server-start)
+    (set-file-modes (expand-file-name server-name server-socket-dir) #o770)))
+
 ;; Strategy: Always load pre-tangled config.el directly.
 ;; This avoids loading built-in org before straight can install a custom version.
 ;; Tangling happens automatically on save (see auto-tangle in config.org).

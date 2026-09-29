@@ -40,6 +40,38 @@
   (when (< emacs-major-version 29)
     (error "Reomacs requires Emacs 29+, you have %s" emacs-version))
 
+  ;; Set up the native Android GUI before loading the package-heavy config.
+  ;; The GUI owns the Emacs server; NoD shells connect through its Unix socket.
+  (when (eq system-type 'android)
+    (setq temporary-file-directory
+          (file-name-as-directory
+           (expand-file-name "cache/nns" user-emacs-directory))
+          create-lockfiles nil
+          make-backup-files nil)
+    (make-directory temporary-file-directory t)
+    (add-to-list 'load-path (expand-file-name "lisp" user-emacs-directory))
+    (require 'nns)
+    (nns-mode 1)
+
+    (require 'server)
+    (setq server-socket-dir "/data/nix/var/emacs-server")
+    ;; The directory belongs to Emacs, with search-only access for NoD.
+    ;; Upstream rejects any group access, including search without write.
+    (defun reomacs/android-server-ensure-safe-dir (original directory)
+      "Accept only the provisioned, search-only Android server DIRECTORY."
+      (if (equal (directory-file-name directory) server-socket-dir)
+          (let ((attributes (file-attributes directory 'integer)))
+            (unless (and (eq t (file-attribute-type attributes))
+                         (= (file-attribute-user-id attributes) (user-uid))
+                         (= (file-modes directory 'nofollow) #o2710))
+              (error "Unsafe Android Emacs server directory: %s" directory)))
+        (funcall original directory)))
+    (when (file-directory-p server-socket-dir)
+      (advice-add 'server-ensure-safe-dir :around
+                  #'reomacs/android-server-ensure-safe-dir)
+      (server-start)
+      (set-file-modes (expand-file-name server-name server-socket-dir) #o770)))
+
   ;; Strategy: Always load pre-tangled config.el directly.
   ;; This avoids loading built-in org before straight can install a custom version.
   ;; Tangling happens automatically on save (see auto-tangle in config.org).
@@ -946,16 +978,15 @@ DELTA is the pixel scroll amount."
 - https://github.com/magnars/dash.el
 
 #+begin_src emacs-lisp
-  ;; Dash must be loaded early for macros (->>, --map, etc.)
-  ;; eval-and-compile ensures macros available at compile & runtime
-  (eval-and-compile (require 'dash))
-
   (use-package dash
     :demand t
     :config
     (global-dash-fontify-mode)
     (with-eval-after-load 'info-look
       (dash-register-info-lookup)))
+
+  ;; Dash macros (->>, --map, etc.) are used below.
+  (eval-and-compile (require 'dash))
 #+end_src
 
 ** Transient
@@ -4328,6 +4359,29 @@ From [[https://coredumped.dev/2025/06/18/making-tramp-go-brrrr.][Making TRAMP go
                 (append (cdr login-args)
                         '(("-o" "SetEnv=TERM=dumb")))))))
 
+  (when (eq system-type 'android)
+    (with-eval-after-load 'tramp
+      (let* ((method (copy-tree (cdr (assoc "ssh" tramp-methods))))
+             (login-args (assoc 'tramp-login-args method))
+             (ssh-directory (expand-file-name ".ssh" "~")))
+        ;; The NNS launcher needs its preload, but Android's SSH linker forbids it.
+        (setcar (cdr (assoc 'tramp-login-program method)) "/system/bin/env")
+        ;; Android's /bin/sh replaces the prompt TRAMP uses to detect readiness.
+        (setcar (cdr (assoc 'tramp-remote-shell method))
+                "/nix/var/nix/profiles/default/bin/bash")
+        (setcar (cdr login-args)
+                (append '(("-u" "LD_PRELOAD") ("/product/bin/ssh"))
+                        (butlast (cadr login-args))
+                        `(("-o" "BatchMode=yes")
+                          ("-o" "ConnectTimeout=5")
+                          ("-o" "GlobalKnownHostsFile=/dev/null")
+                          ("-o" ,(concat "UserKnownHostsFile="
+                                          (expand-file-name "known_hosts" ssh-directory)))
+                          ("-i" ,(expand-file-name "id_ed25519" ssh-directory))
+                          ("-o" "StrictHostKeyChecking=yes"))
+                        (last (cadr login-args))))
+        (push (cons "nixondroid" method) tramp-methods))))
+
   ;; Fail fast on unreachable hosts instead of hanging for 30-60s.
   ;; TRAMP-level timeout (seconds to wait for connection).
   (setq tramp-connection-timeout 5)
@@ -4337,6 +4391,9 @@ From [[https://coredumped.dev/2025/06/18/making-tramp-go-brrrr.][Making TRAMP go
   ;; which silently blocks waiting for YubiKey touch inside vertico.
   (setq tramp-completion-use-auth-sources nil)
 #+end_src
+
+On NoD, open private files in the GUI with
+=emacsclient -n --tramp=/nixondroid:nix-on-droid@127.0.0.1#8022: ~/.zshrc=.
 
 ** Copy Size Limit
 
