@@ -4380,7 +4380,7 @@ From [[https://coredumped.dev/2025/06/18/making-tramp-go-brrrr.][Making TRAMP go
                           ("-i" ,(expand-file-name "id_ed25519" ssh-directory))
                           ("-o" "StrictHostKeyChecking=yes"))
                         (last (cadr login-args))))
-        (push (cons "nixondroid" method) tramp-methods))))
+        (push (cons "nod" method) tramp-methods))))
 
   ;; Fail fast on unreachable hosts instead of hanging for 30-60s.
   ;; TRAMP-level timeout (seconds to wait for connection).
@@ -4393,7 +4393,7 @@ From [[https://coredumped.dev/2025/06/18/making-tramp-go-brrrr.][Making TRAMP go
 #+end_src
 
 On NoD, open private files in the GUI with
-=emacsclient -n --tramp=/nixondroid:nix-on-droid@127.0.0.1#8022: ~/.zshrc=.
+=emacsclient -n --tramp=/nod:nix-on-droid@127.0.0.1#8022: ~/.zshrc=.
 
 ** Copy Size Limit
 
