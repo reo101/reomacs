@@ -171,13 +171,26 @@ Skips display-touching initialization on reload to avoid PGTK crashes."
     (with-selected-frame frame
       (when (display-graphic-p frame)
         (tool-bar-mode -1)
-        (menu-bar-mode -1)
+        (menu-bar-mode (if (eq system-type 'android) 1 -1))
         (scroll-bar-mode -1))))
 
   ;; Only run frame UI setup on initial load (not reload)
   (unless reomacs/config-loaded-p
     (reomacs/setup-frame-ui (selected-frame))
     (add-hook 'after-make-frame-functions #'reomacs/setup-frame-ui))
+
+  (when (eq system-type 'android)
+    (defun reomacs/android-toggle-keyboard ()
+      "Toggle the Android on-screen keyboard in every buffer."
+      (interactive)
+      (setq-default touch-screen-display-keyboard
+                    (not (default-value 'touch-screen-display-keyboard)))
+      (android-toggle-on-screen-keyboard
+       (selected-frame) (not (default-value 'touch-screen-display-keyboard))))
+    (define-key (lookup-key global-map [menu-bar options])
+                [android-keyboard]
+                '(menu-item "Show On-Screen Keyboard" reomacs/android-toggle-keyboard
+                            :button (:toggle . touch-screen-display-keyboard))))
 
   ;; Scrolling handled by ultra-scroll, don't set conflicting values
   ;; (setopt scroll-step 1)
@@ -195,6 +208,8 @@ Skips display-touching initialization on reload to avoid PGTK crashes."
     (when (member "Maple Mono NF CN" (font-family-list))
       (set-face-attribute 'default nil :font "Maple Mono NF CN" :height 108)
       (set-face-attribute 'fixed-pitch nil :font "Maple Mono NF CN")))
+  (when (eq system-type 'android)
+    (setq nerd-icons-font-family "Maple Mono NF CN"))
 
   ;; Indentation
   ;; Always use spaces instead of tabs
@@ -1202,6 +1217,39 @@ session is ready."
     (setopt evil-cross-lines t)
 
     :config
+    (when (eq system-type 'android)
+      (defvar-local reomacs/android-text-conversion-style nil
+        "Text conversion style to restore when entering an Evil text-entry state.")
+
+      (defun reomacs/android-disable-text-conversion ()
+        "Use key events instead of IME text insertion in Evil command states."
+        (unless (local-variable-p 'reomacs/android-text-conversion-style)
+          (setq-local reomacs/android-text-conversion-style text-conversion-style))
+        (when text-conversion-style
+          (set-text-conversion-style nil)))
+
+      (defun reomacs/android-restore-text-conversion ()
+        "Restore the previous input method for Evil text-entry states."
+        (when (local-variable-p 'reomacs/android-text-conversion-style)
+          (set-text-conversion-style reomacs/android-text-conversion-style)
+          (kill-local-variable 'reomacs/android-text-conversion-style)))
+
+      (dolist (state '(normal visual motion operator replace))
+        (add-hook (intern (format "evil-%s-state-entry-hook" state))
+                  #'reomacs/android-disable-text-conversion))
+      (dolist (state '(insert emacs))
+        (add-hook (intern (format "evil-%s-state-entry-hook" state))
+                  #'reomacs/android-restore-text-conversion))
+
+      (defun reomacs/android-initialize-text-conversion ()
+        "Disable IME text insertion in buffers already in Evil command states."
+        (dolist (buffer (buffer-list))
+          (with-current-buffer buffer
+            (when (memq evil-state '(normal visual motion operator replace))
+              (reomacs/android-disable-text-conversion)))))
+      (add-hook 'reomacs/post-init-hooks
+                #'reomacs/android-initialize-text-conversion))
+
     (evil-mode 1)
     (define-key evil-insert-state-map (kbd "C-g") 'evil-normal-state)
 
