@@ -498,6 +498,9 @@ Using ultra-scroll (best smooth scrolling available on Linux - momentum requires
     :config
     (ultra-scroll-mode 1))
 
+  (when (eq system-type 'android)
+    (setopt touch-screen-precision-scroll t))
+
   ;; PGTK event latency reduction for niri/Wayland
   ;; Fixes scroll event batching causing 300ms+ pauses on high-refresh displays
   (when (eq window-system 'pgtk)
