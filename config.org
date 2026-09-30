@@ -2107,7 +2107,7 @@ remain anonymous.
 
   (defun reomacs/azdo-pr--root ()
     "Return the current project root, or signal outside a project."
-    (or (when-let ((project (project-current)))
+    (or (when-let* ((project (project-current)))
           (project-root project))
         (user-error "Not inside a project")))
 
@@ -2159,7 +2159,7 @@ remain anonymous.
 
   (defun reomacs/azdo-pr--source-branch ()
     "Return the nearest bookmarked jj ancestor, or prompt for one."
-    (or (when-let ((bookmarks
+    (or (when-let* ((bookmarks
                    (reomacs/azdo-pr--jj
                     "log" "-r" "bookmarks() & ancestors(@)"
                     "-n" "1" "--no-graph" "-T" "bookmarks")))
@@ -2169,7 +2169,7 @@ remain anonymous.
   (defun reomacs/azdo-pr--target-branch ()
     "Return the configured target branch or the bookmark on jj `trunk()'."
     (or reomacs/azdo-target-branch
-        (when-let ((bookmarks
+        (when-let* ((bookmarks
                    (reomacs/azdo-pr--jj
                     "log" "-r" "trunk()" "-n" "1" "--no-graph" "-T" "bookmarks")))
           (car (split-string bookmarks "[[:space:]]+" t)))
@@ -2177,7 +2177,7 @@ remain anonymous.
 
   (defun reomacs/azdo-pr--default-title ()
     "Return the parent jj description's first line as a title default."
-    (when-let ((description
+    (when-let* ((description
                 (reomacs/azdo-pr--jj
                  "log" "-r" "@-" "-n" "1" "--no-graph" "-T" "description")))
       (car (split-string description "\n" t))))
@@ -3450,7 +3450,7 @@ From [[https://github.com/xenodium/agent-shell][agent-shell]]
     :config
     ;; Replace Dape's generic `a.out' Rust entries with Cargo-aware ones.
     (dolist (name '(lldb-vscode lldb-dap))
-      (when-let ((config (alist-get name dape-configs)))
+      (when-let* ((config (alist-get name dape-configs)))
         (setf (alist-get name dape-configs)
               (plist-put
                config 'modes
@@ -4117,7 +4117,7 @@ Native heirline-inspired mode-line.
 
   (defun reomodeline--jj-start-process ()
     "Start async jj process to get current change id."
-    (when-let ((root (reomodeline--jj-root)))
+    (when-let* ((root (reomodeline--jj-root)))
       ;; Cancel any existing process
       (when (process-live-p reomodeline--jj-proc)
         (delete-process reomodeline--jj-proc))
@@ -4245,7 +4245,7 @@ Native heirline-inspired mode-line.
     (let (servers)
       (when (and (boundp 'eglot--managed-mode) (bound-and-true-p eglot--managed-mode))
         (condition-case nil
-            (when-let ((s (eglot-current-server)))
+            (when-let* ((s (eglot-current-server)))
               (push (reomodeline--id->string
                      (or (eglot-project-nickname s) "eglot"))
                     servers))
@@ -4449,7 +4449,7 @@ Memoize expensive TRAMP operations to avoid repeated remote calls.
   (defun memoize-remote (key cache orig-fn &rest args)
     "Memoize a value if the key is a remote path."
     (if (and key (file-remote-p key))
-        (if-let ((current (assoc key (symbol-value cache))))
+        (if-let* ((current (assoc key (symbol-value cache))))
             (cdr current)
           (let ((current (apply orig-fn args)))
             (set cache (cons (cons key current) (symbol-value cache)))
