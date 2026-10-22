@@ -1163,6 +1163,20 @@ Do not allow the cursor in the minibuffer prompt.
 
 * Editing
 
+** Multiple Cursors
+
+#+begin_src emacs-lisp
+  (use-package multiple-cursors
+    :straight (:host github :repo "magnars/multiple-cursors.el")
+    :bind
+    (("C-c v n" . mc/mark-next-like-this)
+     ("C-c v p" . mc/mark-previous-like-this)
+     ("C-c v a" . mc/mark-all-like-this)
+     ("C-c v l" . mc/edit-lines)
+     ("C-c v s" . mc/skip-to-next-like-this)
+     ("C-c v u" . mc/unmark-next-like-this)))
+#+end_src
+
 ** Input Method (fcitx5)
 
 #+begin_src emacs-lisp
