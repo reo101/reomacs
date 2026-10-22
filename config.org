@@ -1796,9 +1796,7 @@ If point is after a non-delimiter, delete back to the previous boundary."
     (savehist-mode))
 
   (use-package markdown-ts-mode
-    ;; The lab tracks Emacs 31's built-in mode; this companion package is the
-    ;; same author's implementation for Emacs 29 and 30.
-    :straight (:host github :repo "LionyxML/markdown-ts-mode")
+    :straight nil
     :mode (("\\.md\\'" . markdown-ts-mode)
            ("\\.markdown\\'" . markdown-ts-mode)))
   ;; (defun markdown-view-mode-maybe ()
