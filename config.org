@@ -2405,7 +2405,66 @@ Transient menu for build tool targets (make, just, task, etc.).
 
 #+begin_src emacs-lisp
   (use-package ghostel
-    :straight (:host github :repo "dakra/ghostel"))
+    :straight (ghostel
+               :host github
+               :repo "dakra/ghostel"
+               :files (:defaults "etc" "src" "vendor"
+                                 "build.zig" "build.zig.zon" "symbols.map")))
+
+  (use-package evil-ghostel
+    :straight (evil-ghostel
+               :host github
+               :repo "dakra/ghostel"
+               :files ("extensions/evil-ghostel/*.el"))
+    :after (ghostel evil)
+    :hook (ghostel-mode . evil-ghostel-mode))
+
+  (use-package ghostel-eshell
+    :straight (ghostel-eshell
+               :host github
+               :repo "dakra/ghostel"
+               :files ("lisp/ghostel-eshell.el"))
+    :hook (eshell-load . ghostel-eshell-visual-command-mode))
+
+  (use-package ghostel-shell-command
+    :straight (ghostel-shell-command
+               :host github
+               :repo "dakra/ghostel"
+               :files ("lisp/ghostel-shell-command.el"))
+    :hook (after-init . ghostel-shell-command-global-mode))
+
+  (use-package ghostel-comint
+    :straight (ghostel-comint
+               :host github
+               :repo "dakra/ghostel"
+               :files ("lisp/ghostel-comint.el"))
+    :hook (after-init . ghostel-comint-global-mode))
+
+  (use-package ghostel-org
+    :straight (ghostel-org
+               :host github
+               :repo "dakra/ghostel"
+               :files ("lisp/ghostel-org.el"))
+    :after org)
+
+  (use-package ghostel-ime
+    :straight (ghostel-ime
+               :host github
+               :repo "dakra/ghostel"
+               :files ("lisp/ghostel-ime.el"))
+    :hook (ghostel-mode . ghostel-ime-mode))
+
+  (use-package consult-ghostel
+    :straight (consult-ghostel
+               :host github
+               :repo "dakra/ghostel"
+               :files ("extensions/consult-ghostel/*.el"))
+    :hook (after-init . consult-ghostel-mode)
+    :bind (("C-x m" . consult-ghostel)
+           :map project-prefix-map
+           ("m" . consult-ghostel-project)
+           :map ghostel-semi-char-mode-map
+           ("C-c h" . consult-ghostel-history)))
 #+end_src
 
 ** EShell
