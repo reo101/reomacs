@@ -3313,6 +3313,14 @@ With PROMPT-FOR-USER, prompt even when `reomacs/ement-user-id' is set."
     ("C-c m" . reomacs/ement-login))
 #+end_src
 
+** ElNeo
+
+#+begin_src emacs-lisp
+  (use-package elneo
+    :straight (:host github :repo "aard-fi/elneo")
+    :commands (elneo-start elneo-add-account))
+#+end_src
+
 * LLMs
 
 ** gptel
