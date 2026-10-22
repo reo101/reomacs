@@ -10,3 +10,4 @@
 !test/
 !test/reomacs-treesit-rainbow-test.el
 !test/reomacs-dailies-test.el
+!test/reomacs-auto-tangle-test.el

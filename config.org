@@ -130,11 +130,13 @@ Use to comment out blocks of code without disabling them with semicolons."
 
 #+begin_src emacs-lisp
   (defun reomacs/tangle-config-org ()
-    "Tangle config.org automatically if in `user-emacs-directory`"
+    "Tangle all of config.org automatically, even when narrowed."
     (when (string-equal (buffer-file-name)
                         (expand-file-name "config.org" user-emacs-directory))
       (let ((org-confirm-babel-evaluate nil))
-        (org-babel-tangle))))
+        (save-restriction
+          (widen)
+          (org-babel-tangle)))))
 
   (add-hook 'after-save-hook #'reomacs/tangle-config-org)
 
